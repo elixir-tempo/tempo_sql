@@ -109,7 +109,9 @@ The rejected cases, from [`Tempo.SQL.Conversion`](https://github.com/elixir-temp
 
 * **Multi-valued token slots.** A `%Tempo{time: [day_of_week: [1, 3, 5]]}` specifies Monday, Wednesday, or Friday — it is a *set of instants*, not an interval. Materialise via `Tempo.to_interval/1` into an `IntervalSet` and store that.
 
-* **Ordinal-date and week-date endpoints.** A `%Tempo{time: [year: 2026, day: 75]}` (day-of-year) or `%Tempo{time: [year: 2026, week: 10, day_of_week: 3]}` (ISO week date) requires calendar conversion to become a `NaiveDateTime`. The library rejects rather than silently converts. Callers should materialise via `Tempo.to_date/1` and rebuild the Tempo from the resulting `Date`.
+* **Endpoints still carrying week or day-of-year tokens.** A `%Tempo{time: [year: 2026, day: 75]}` (day-of-year) or `%Tempo{time: [year: 2026, week: 10]}` (a whole ISO week) requires calendar conversion to become a `NaiveDateTime`, and the second names no single day at all. The library rejects rather than silently converts. Callers should materialise via `Tempo.to_date/1` and rebuild the Tempo from the resulting `Date`.
+
+  Parsing usually gets there first, so this is narrower than it sounds. `~o"2026-075"` and `~o"2026-W10-3"` are both resolved to calendar dates while parsing — by the time storage sees them they are ordinary `[year:, month:, day:]` values and store normally. What reaches this rejection is a Tempo built from the raw tokens, or a bare week like `~o"2026-W10"`.
 
 * **Fully-unbounded intervals.** A `%Tempo.Interval{from: :undefined, to: :undefined}` would serialise to the Postgres range `(,)` — a range that contains every instant. This is almost always a caller error (unset fields), so we reject rather than store silently. Callers who genuinely want the universal range can store `NULL` in a nullable column.
 
@@ -188,9 +190,9 @@ schema "reports" do
 end
 ```
 
-The `text` column carries the original shape; the range column carries the queryable span. A future release will bundle this into a single Ecto type — see the [`ideas_for_the_future.md`](https://github.com/elixir-tempo/tempo/blob/main/plans/ideas_for_the_future.md) entry on a `:text` variant.
+The `text` column carries the original shape; the range column carries the queryable span. A future release will bundle this into a single Ecto type — see the [roadmap entry](https://github.com/elixir-tempo/tempo/blob/main/TODO.md) on a `:text` variant.
 
-**Option 3 — wait for the metadata-preserving variant.** The v0.1.0 release is deliberately lossy on round-trip. The [TODO entry in the parent library](https://github.com/elixir-tempo/tempo/blob/main/TODO.md) flags a round-2 milestone that will add a composite-type variant carrying both the range and the original ISO 8601 string. When it lands, callers who need perfect round-trip can opt in with no schema changes beyond a column swap.
+**Option 3 — wait for the metadata-preserving variant.** Plain-range mode is deliberately lossy on round-trip. The [TODO entry in the parent library](https://github.com/elixir-tempo/tempo/blob/main/TODO.md) flags a round-2 milestone that will add a composite-type variant carrying both the range and the original ISO 8601 string. When it lands, callers who need perfect round-trip can opt in with no schema changes beyond a column swap.
 
 ## Bracket conventions
 

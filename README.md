@@ -23,6 +23,8 @@ end
 
 Requires PostgreSQL 14 or later for `tstzmultirange`. `tstzrange` alone works on PostgreSQL 9.2+.
 
+Requires **Erlang/OTP 27 or later**, inherited from `ex_tempo` — OTP 26 miscompiles Tempo's ISO 8601 tokenizer, so it refuses to build there. Elixir 1.17 and later are supported.
+
 ## Quick start
 
 ### 1. Migration
@@ -173,7 +175,7 @@ For the full mapping — what is retained, what is dropped, what is rejected, an
 
 * Tempo endpoints with multi-valued token slots (`day_of_week: [1, 3, 5]`, `day: 1..15`) — these don't collapse to a single instant.
 
-* Ordinal-date (`year: 2026, day: 75`) or week-date (`year: 2026, week: 10, day_of_week: 3`) endpoints — materialise to a calendar date first via `Tempo.to_date/1` / `Tempo.to_interval/1`.
+* Tempo endpoints that still carry a week token (`year: 2026, week: 10`) or a day with no month (`year: 2026, day: 75`) — these need calendar conversion to name an instant, so materialise them first via `Tempo.to_date/1` / `Tempo.to_interval/1`. Note that parsing already resolves most of these: `~o"2026-075"` and `~o"2026-W10-3"` both arrive as ordinary calendar dates and store without complaint. The refusal bites for values built from these tokens directly, and for a bare week such as `~o"2026-W10"`, which names no single day.
 
 * Empty `Tempo.IntervalSet` values — use a NULL column if you need "no set".
 

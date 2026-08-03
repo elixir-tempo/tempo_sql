@@ -7,6 +7,23 @@ defmodule Tempo.Sql.MixProject do
     [
       app: :ex_tempo_sql,
       version: @version,
+      # Excluded from coverage:
+      #  * `~r/Error$/` — exception structs, whose uncovered lines are
+      #    `message/1` formatting on rare error paths, not logic.
+      #  * `~r/^Tempo\.SQL\.Test\./` — test-support schemas and case
+      #    templates. They are test scaffolding, and counting them at
+      #    100% flatters the real figure.
+      #  * `Tempo.SQL.Repo` — the Ecto repo, which is configuration.
+      #  * `Tempo.SQL.PostgresTypes` — generated in full by
+      #    `Postgrex.Types.define/3`; none of its lines are ours.
+      test_coverage: [
+        ignore_modules: [
+          ~r/Error$/,
+          ~r/^Tempo\.SQL\.Test\./,
+          Tempo.SQL.Repo,
+          Tempo.SQL.PostgresTypes
+        ]
+      ],
       elixir: "~> 1.17",
       name: "Tempo SQL",
       source_url: "https://github.com/elixir-tempo/tempo_sql",

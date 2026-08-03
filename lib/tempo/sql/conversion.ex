@@ -70,8 +70,9 @@ defmodule Tempo.SQL.Conversion do
 
   Unlike `interval_to_range/1`, this variant accepts Tempo
   endpoints the plain `tstzrange` encoder rejects — qualifications,
-  non-Gregorian calendars, multi-valued slots, ordinal/week dates
-  — because the composite's `meta` column carries the original
+  non-Gregorian calendars, multi-valued slots, and endpoints still
+  carrying week or day-of-year tokens — because the composite's
+  `meta` column carries the original
   shape losslessly. The range is still populated from the
   materialised endpoints so Postgres range-operator queries work.
 

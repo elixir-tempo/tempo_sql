@@ -12,9 +12,9 @@ defmodule Tempo.SQL.Meta do
   On store, the meta is a JSON document with this shape:
 
       %{
-        "v"           => 1,
-        "from"        => iso8601_string | null,
-        "to"          => iso8601_string | null,
+        "v"           => 2,
+        "from"        => iso8601_string | ".." | null,
+        "to"          => iso8601_string | ".." | null,
         "recurrence"  => pos_integer | "infinity" | 1,
         "direction"   => 1 | -1,
         "duration"    => iso8601_string | null,
@@ -26,13 +26,28 @@ defmodule Tempo.SQL.Meta do
   `Tempo.from_iso8601/1`, which faithfully recovers every
   Tempo feature ISO 8601 / ISO 8601-2 / IXDTF can express.
 
+  ## Format versions
+
+  Version 2 writes `".."` for an explicitly open-ended endpoint
+  and `null` for an absent one, keeping apart two states that a
+  recurring interval depends on: `~o"2022Y1M1D/.."` has an open
+  `to`, while `R5/2022-01-01/P1M` has no `to` at all and takes
+  its extent from the duration.
+
+  Version 1 wrote `null` for both and read it back as
+  open-ended, which left a stored recurring interval unable to
+  render. Version 1 rows still decode as they always did — that
+  reading is all the information they carry — so no data
+  migration is needed, but a recurring interval written by
+  0.1.0 should be rewritten to regain its `to`.
+
   Encoding uses Erlang's built-in `:json` module (OTP 27+);
   the `jsonb` column type handles storage and indexing on the
   Postgres side.
 
   """
 
-  @current_version 1
+  @current_version 2
 
   # Erlang's :json module uses the `:null` atom for JSON null by
   # default. We configure both encode and decode to use Elixir's
@@ -87,8 +102,10 @@ defmodule Tempo.SQL.Meta do
   end
 
   def decode_interval(%{} = map) do
-    with {:ok, from} <- decode_endpoint(Map.get(map, "from")),
-         {:ok, to} <- decode_endpoint(Map.get(map, "to")),
+    version = Map.get(map, "v", 1)
+
+    with {:ok, from} <- decode_endpoint(Map.get(map, "from"), version),
+         {:ok, to} <- decode_endpoint(Map.get(map, "to"), version),
          {:ok, recurrence} <- decode_recurrence(Map.get(map, "recurrence", 1)),
          {:ok, direction} <- decode_direction(Map.get(map, "direction", 1)),
          {:ok, duration} <- decode_duration(Map.get(map, "duration")),
@@ -123,7 +140,15 @@ defmodule Tempo.SQL.Meta do
     }
   end
 
-  defp encode_endpoint(:undefined), do: nil
+  # An endpoint has three states and the meta must keep them apart.
+  # A stated endpoint is its ISO 8601 string. `:undefined` means
+  # explicitly open-ended, which ISO 8601 writes as `..`. `nil` means
+  # there is no `to` endpoint at all — a recurring interval whose
+  # extent comes from its duration (`R5/2022-01-01/P1M`). Version 1
+  # wrote JSON null for both of the latter and could not tell them
+  # apart on load, so a recurring interval came back with
+  # `to: :undefined` and could no longer be rendered at all.
+  defp encode_endpoint(:undefined), do: ".."
   defp encode_endpoint(nil), do: nil
   defp encode_endpoint(%Tempo{} = tempo), do: Tempo.to_iso8601(tempo)
   defp encode_endpoint(%Tempo.Duration{} = duration), do: Tempo.to_iso8601(duration)
@@ -141,9 +166,17 @@ defmodule Tempo.SQL.Meta do
   # Map → Interval fields
   # ------------------------------------------------------------------
 
-  defp decode_endpoint(nil), do: {:ok, :undefined}
+  defp decode_endpoint("..", _version), do: {:ok, :undefined}
 
-  defp decode_endpoint(string) when is_binary(string) do
+  # Version 1 could not distinguish "open-ended" from "absent", and
+  # read back as open-ended. Keep that reading for version 1 rows —
+  # it is what they were written to mean and all the information they
+  # carry. Version 2 rows say `..` when they mean open-ended, so a
+  # null there is an absent endpoint.
+  defp decode_endpoint(nil, 1), do: {:ok, :undefined}
+  defp decode_endpoint(nil, _version), do: {:ok, nil}
+
+  defp decode_endpoint(string, _version) when is_binary(string) do
     case Tempo.from_iso8601(string) do
       {:ok, %Tempo{} = tempo} -> {:ok, tempo}
       {:ok, %Tempo.Duration{} = duration} -> {:ok, duration}

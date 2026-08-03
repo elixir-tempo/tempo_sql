@@ -4,11 +4,21 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 ## [0.2.0] — 2026-08-03
 
+### Fixed
+
+* Recurring intervals stored in a `tempo_range` or `tempo_multirange` column now load back intact. The meta format could not tell an open-ended endpoint from an absent one, so a value like `R5/2022-01-01/P1M` returned with `to: :undefined` and could no longer be rendered at all.
+
+* Documented the storage contract accurately for week and day-of-year endpoints. Ordinal dates and full week dates are resolved to calendar dates while parsing and store normally; only a value still carrying those tokens — such as a bare `~o"2026-W10"` — is refused.
+
 ### Changed
+
+* The composite `meta` format is now version 2, which writes `".."` for an explicitly open-ended endpoint. Version 1 rows keep decoding exactly as before, so no migration is required, but a recurring interval written by 0.1.0 should be rewritten to regain its endpoint.
 
 * Requires `ex_tempo ~> 1.1`. The previous `~> 0.16` constraint could not resolve alongside Tempo 1.x, so the two libraries could not be used together. Verified against Tempo 1.1.0 with the full suite passing; no API changes were needed.
 
 * Repository links point at the `elixir-tempo` organisation, and the README links the storage-contract guide on HexDocs rather than a GitHub blob.
+
+* **Requires Erlang/OTP 27 or later**, inherited from `ex_tempo` — OTP 26 is no longer supported and has been dropped from CI.
 
 ## [0.1.0] — 2026-07-05
 

@@ -80,22 +80,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # OTP 26 is not supported: `ex_tempo` refuses to compile on it
+        # (its tokenizer trips an OTP-26 code-generation bug), and that
+        # floor is inherited here. OTP 27 is the minimum.
         include:
-          # Elixir 1.17 — supports OTP 25–27
-          - elixir: "1.17-otp-26"
-            otp: "26"
+          # Elixir 1.17 — on OTP 27
           - elixir: "1.17-otp-27"
             otp: "27"
 
-          # Elixir 1.18 — supports OTP 25–27
-          - elixir: "1.18-otp-26"
-            otp: "26"
+          # Elixir 1.18 — on OTP 27
           - elixir: "1.18-otp-27"
             otp: "27"
 
-          # Elixir 1.19 — supports OTP 26–28
-          - elixir: "1.19-otp-26"
-            otp: "26"
+          # Elixir 1.19 — on OTP 27–28
           - elixir: "1.19-otp-27"
             otp: "27"
           - elixir: "1.19-otp-28"
