@@ -81,7 +81,7 @@ defmodule Tempo.Sql.MixProject do
         "CHANGELOG.md",
         "LICENSE.md"
       ],
-      formatters: ["html"]
+      formatters: ["html", "markdown"]
     ]
   end
 
