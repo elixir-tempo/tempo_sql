@@ -9,7 +9,7 @@ defmodule Tempo.Sql.MixProject do
       version: @version,
       elixir: "~> 1.17",
       name: "Tempo SQL",
-      source_url: "https://github.com/kipcole9/tempo_sql",
+      source_url: "https://github.com/elixir-tempo/tempo_sql",
       docs: docs(),
       deps: deps(),
       description: description(),
@@ -33,9 +33,9 @@ defmodule Tempo.Sql.MixProject do
       maintainers: ["Kip Cole"],
       licenses: ["Apache-2.0"],
       links: %{
-        "GitHub" => "https://github.com/kipcole9/tempo_sql",
-        "Readme" => "https://github.com/kipcole9/tempo_sql/blob/v#{@version}/README.md",
-        "Changelog" => "https://github.com/kipcole9/tempo_sql/blob/v#{@version}/CHANGELOG.md"
+        "GitHub" => "https://github.com/elixir-tempo/tempo_sql",
+        "Readme" => "https://github.com/elixir-tempo/tempo_sql/blob/v#{@version}/README.md",
+        "Changelog" => "https://github.com/elixir-tempo/tempo_sql/blob/v#{@version}/CHANGELOG.md"
       },
       files: [
         "lib",
@@ -76,7 +76,7 @@ defmodule Tempo.Sql.MixProject do
 
   defp deps do
     [
-      {:ex_tempo, "~> 0.16"},
+      {:ex_tempo, "~> 1.1"},
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.19"},

@@ -2,7 +2,7 @@
 
 How Tempo types map to PostgreSQL range types, what survives a store-and-load cycle, and — importantly — what does not.
 
-This is a reference document. Every claim here is enforced by [`Tempo.SQL.Conversion`](https://github.com/kipcole9/tempo_sql/blob/main/lib/tempo/sql/conversion.ex) / [`Tempo.SQL.Meta`](https://github.com/kipcole9/tempo_sql/blob/main/lib/tempo/sql/meta.ex) and covered by the test suite.
+This is a reference document. Every claim here is enforced by [`Tempo.SQL.Conversion`](https://github.com/elixir-tempo/tempo_sql/blob/main/lib/tempo/sql/conversion.ex) / [`Tempo.SQL.Meta`](https://github.com/elixir-tempo/tempo_sql/blob/main/lib/tempo/sql/meta.ex) and covered by the test suite.
 
 ## Two storage modes
 
@@ -99,7 +99,7 @@ Tempo draws a line between *implicit* spans (a bare `%Tempo{}` that represents i
 
 The storage contract distinguishes between *dropped* (silently lost on store) and *rejected* (the `dump/1` callback returns `:error`, Ecto raises `Ecto.ChangeError` on insert). Rejection is the library's way of saying "this value has no faithful representation in a `tstzrange` — the caller must make a decision".
 
-The rejected cases, from [`Tempo.SQL.Conversion`](https://github.com/kipcole9/tempo_sql/blob/main/lib/tempo/sql/conversion.ex):
+The rejected cases, from [`Tempo.SQL.Conversion`](https://github.com/elixir-tempo/tempo_sql/blob/main/lib/tempo/sql/conversion.ex):
 
 * **Recurrence rules.** A `Tempo.Interval` with `recurrence != 1` or a `repeat_rule` is a specification for an infinite (or N-bounded) set of occurrences, not a single range. Callers should materialise via `Tempo.to_interval/1`, which returns a `Tempo.IntervalSet`, then store that under `Tempo.Ecto.IntervalSet`.
 
@@ -188,9 +188,9 @@ schema "reports" do
 end
 ```
 
-The `text` column carries the original shape; the range column carries the queryable span. A future release will bundle this into a single Ecto type — see the [`ideas_for_the_future.md`](https://github.com/kipcole9/tempo/blob/main/plans/ideas_for_the_future.md) entry on a `:text` variant.
+The `text` column carries the original shape; the range column carries the queryable span. A future release will bundle this into a single Ecto type — see the [`ideas_for_the_future.md`](https://github.com/elixir-tempo/tempo/blob/main/plans/ideas_for_the_future.md) entry on a `:text` variant.
 
-**Option 3 — wait for the metadata-preserving variant.** The v0.1.0 release is deliberately lossy on round-trip. The [TODO entry in the parent library](https://github.com/kipcole9/tempo/blob/main/TODO.md) flags a round-2 milestone that will add a composite-type variant carrying both the range and the original ISO 8601 string. When it lands, callers who need perfect round-trip can opt in with no schema changes beyond a column swap.
+**Option 3 — wait for the metadata-preserving variant.** The v0.1.0 release is deliberately lossy on round-trip. The [TODO entry in the parent library](https://github.com/elixir-tempo/tempo/blob/main/TODO.md) flags a round-2 milestone that will add a composite-type variant carrying both the range and the original ISO 8601 string. When it lands, callers who need perfect round-trip can opt in with no schema changes beyond a column swap.
 
 ## Bracket conventions
 

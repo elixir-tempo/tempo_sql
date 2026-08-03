@@ -2,7 +2,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ex_tempo_sql.svg)](https://hex.pm/packages/ex_tempo_sql)
 
-Ecto types and migration helpers that persist [Tempo](https://github.com/kipcole9/tempo) intervals and interval sets as PostgreSQL `tstzrange` / `tstzmultirange` values.
+Ecto types and migration helpers that persist [Tempo](https://github.com/elixir-tempo/tempo) intervals and interval sets as PostgreSQL `tstzrange` / `tstzmultirange` values.
 
 Tempo models time as intervals, not instants. PostgreSQL models the same shape natively — a `tstzrange` **is** a bounded span with the half-open `[lower, upper)` convention, and `tstzmultirange` (PG 14+) is a set of disjoint spans. `tempo_sql` is the adapter between them: a Tempo interval dumps straight to a Postgrex range, loads straight back, and participates in Postgres range queries (`@>`, `&&`, `-|-`) as first-class values.
 
@@ -13,7 +13,7 @@ Add `ex_tempo_sql` to your deps:
 ```elixir
 def deps do
   [
-    {:ex_tempo, "~> 0.3"},
+    {:ex_tempo, "~> 1.1"},
     {:ex_tempo_sql, "~> 0.1"},
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.19"}
@@ -103,7 +103,7 @@ Repo.all(
 | `Tempo.Ecto.TempoRange`       | `%Tempo.Interval{}`    | `tempo_range`      |
 | `Tempo.Ecto.TempoMultirange`  | `%Tempo.IntervalSet{}` | `tempo_multirange` |
 
-Use the composite types when the plain-range mode's losses hurt — recurrence rules, qualifications (`:uncertain`, `:approximate`), non-Gregorian calendars, zone identifiers, or the implicit-vs-explicit-span distinction. See the [storage contract guide](https://github.com/kipcole9/tempo_sql/blob/main/guides/storage-contract.md#composite-mode--tempo_range-and-tempo_multirange) for setup and trade-offs.
+Use the composite types when the plain-range mode's losses hurt — recurrence rules, qualifications (`:uncertain`, `:approximate`), non-Gregorian calendars, zone identifiers, or the implicit-vs-explicit-span distinction. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#composite-mode--tempo_range-and-tempo_multirange) for setup and trade-offs.
 
 `Tempo.Ecto.Tempo` materialises a partial Tempo value (`~o"2026Y"`, `~o"2026Y-06M"`) to its explicit span before writing. On load you get back a `%Tempo.Interval{}` — the "it was just a year token" fact doesn't round-trip.
 
@@ -119,7 +119,7 @@ schema "reports" do
 end
 ```
 
-A column declared `resolution: :year` always loads as year-resolution Tempos, regardless of what the underlying `tstzrange` stored — it's a caller-side assertion about column contents, not a heuristic. See the [storage contract guide](https://github.com/kipcole9/tempo_sql/blob/main/guides/storage-contract.md#preserving-resolution--the-options) for the caveats.
+A column declared `resolution: :year` always loads as year-resolution Tempos, regardless of what the underlying `tstzrange` stored — it's a caller-side assertion about column contents, not a heuristic. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#preserving-resolution--the-options) for the caveats.
 
 ## Query API
 
@@ -149,7 +149,7 @@ All three are thin delegates — you can also write the raw `add :window, :tstzr
 
 **Not every Tempo value can be stored as a Postgres range.** Tempo expresses things that `tstzrange` / `tstzmultirange` cannot: qualifications, recurrence rules, non-Gregorian calendars, multi-valued token slots. `tempo_sql` is *explicit* about this — rather than silently lose information, it returns `:error` from `dump/1`, which surfaces as an `Ecto.ChangeError` at insert time.
 
-For the full mapping — what is retained, what is dropped, what is rejected, and how Tempo's resolution-by-omission convention interacts with Postgres ranges — see the [**Storage contract guide**](https://github.com/kipcole9/tempo_sql/blob/main/guides/storage-contract.md). The summary:
+For the full mapping — what is retained, what is dropped, what is rejected, and how Tempo's resolution-by-omission convention interacts with Postgres ranges — see the [**Storage contract guide**](https://hexdocs.pm/ex_tempo_sql/storage-contract.html). The summary:
 
 ### What **is** storable
 

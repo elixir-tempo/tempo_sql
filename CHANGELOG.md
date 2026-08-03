@@ -2,6 +2,14 @@
 
 All notable changes to `ex_tempo_sql` are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+* Requires `ex_tempo ~> 1.1`. The previous `~> 0.16` constraint could not resolve alongside Tempo 1.x, so the two libraries could not be used together. Verified against Tempo 1.1.0 with the full suite passing; no API changes were needed.
+
+* Repository links point at the `elixir-tempo` organisation, and the README links the storage-contract guide on HexDocs rather than a GitHub blob.
+
 ## [0.1.0] — 2026-07-05
 
 ### Highlights
