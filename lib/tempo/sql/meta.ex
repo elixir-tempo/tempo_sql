@@ -55,29 +55,116 @@ defmodule Tempo.SQL.Meta do
   # distinguish `:null` from `nil`.
   @decode_options %{null: nil}
 
-  @doc "Encoder callback for `:json.encode/2` that treats `nil` as JSON null."
+  @doc """
+  Encoder callback for `:json.encode/2` that treats `nil` as JSON
+  null.
+
+  ### Arguments
+
+  * `value` is the term being encoded.
+
+  * `encode` is the encoder function `:json` passes for recursion.
+
+  ### Returns
+
+  * The encoded value as iodata.
+
+  ### Examples
+
+      iex> :json.encode(%{"ends" => nil}, &Tempo.SQL.Meta.nil_aware_encoder/2)
+      ...> |> IO.iodata_to_binary()
+      ~s({"ends":null})
+
+  """
   def nil_aware_encoder(nil, _encode), do: "null"
   def nil_aware_encoder(value, encode), do: :json.encode_value(value, encode)
 
-  @doc "Decoder options for `:json.decode/3` that map JSON null to `nil`."
+  @doc """
+  Returns the decoder options for `:json.decode/3` that map JSON null
+  to `nil`.
+
+  ### Returns
+
+  * A map of `:json` decoder options.
+
+  ### Examples
+
+      iex> Tempo.SQL.Meta.decode_options()
+      %{null: nil}
+
+  """
   def decode_options, do: @decode_options
 
-  @doc "Encode an arbitrary term as a nil-aware JSON binary."
+  @doc """
+  Encodes an arbitrary term as a nil-aware JSON binary.
+
+  ### Arguments
+
+  * `term` is any JSON-serialisable term.
+
+  ### Returns
+
+  * The encoded JSON as a binary.
+
+  ### Examples
+
+      iex> Tempo.SQL.Meta.encode_json(%{"hours" => 8})
+      ~s({"hours":8})
+
+  """
   def encode_json(term) do
     term |> :json.encode(&nil_aware_encoder/2) |> IO.iodata_to_binary()
   end
 
-  @doc "Decode a nil-aware JSON binary. Returns the decoded term directly."
+  @doc """
+  Decodes a nil-aware JSON binary.
+
+  ### Arguments
+
+  * `binary` is the JSON document to decode.
+
+  ### Returns
+
+  * The decoded term directly — not wrapped in a tuple — with JSON
+    null becoming `nil`.
+
+  ### Examples
+
+      iex> Tempo.SQL.Meta.decode_json(~s({"hours":8}))
+      %{"hours" => 8}
+
+  """
   def decode_json(binary) when is_binary(binary) do
     {decoded, :ok, _rest} = :json.decode(binary, :ok, @decode_options)
     decoded
   end
 
   @doc """
-  Encode a `t:Tempo.Interval.t/0` to a JSON string for storage
-  in a `jsonb` column.
+  Encodes a `t:Tempo.Interval.t/0` to a JSON string for storage in a
+  `jsonb` column.
 
-  Returns an iolist suitable for handing to Postgrex.
+  This is what makes the composite types lossless: everything a
+  `tstzrange` cannot express — qualifications, calendars, recurrence,
+  metadata — is carried here instead.
+
+  ### Arguments
+
+  * `interval` is the `t:Tempo.Interval.t/0` to encode.
+
+  ### Returns
+
+  * The encoded document as iodata, suitable for handing to Postgrex.
+
+  ### Examples
+
+      iex> interval = Tempo.Interval.new!(from: ~o"2027-06-15", to: ~o"2027-06-16")
+      iex> interval
+      ...> |> Tempo.SQL.Meta.encode_interval()
+      ...> |> IO.iodata_to_binary()
+      ...> |> Tempo.SQL.Meta.decode_json()
+      ...> |> Map.get("from")
+      "2027Y6M15D"
+
   """
   @spec encode_interval(Tempo.Interval.t()) :: iodata()
   def encode_interval(%Tempo.Interval{} = interval) do
@@ -87,10 +174,32 @@ defmodule Tempo.SQL.Meta do
   end
 
   @doc """
-  Decode a JSON string (or already-decoded map) back into a
+  Decodes a JSON string, or an already-decoded map, back into a
   `t:Tempo.Interval.t/0`.
 
-  Returns `{:ok, interval}` or `{:error, reason}`.
+  ### Arguments
+
+  * `json` is the encoded document, either as a binary or as the map
+    Postgrex hands back from a `jsonb` column.
+
+  ### Returns
+
+  * `{:ok, interval}` where `interval` is a `t:Tempo.Interval.t/0`.
+
+  * `{:error, reason}` when the document is not an interval, or holds
+    a field that does not decode.
+
+  ### Examples
+
+      iex> interval = Tempo.Interval.new!(from: ~o"1984?", to: ~o"2004~")
+      iex> json = interval |> Tempo.SQL.Meta.encode_interval() |> IO.iodata_to_binary()
+      iex> {:ok, loaded} = Tempo.SQL.Meta.decode_interval(json)
+      iex> {loaded.from.qualification, loaded.to.qualification}
+      {:uncertain, :approximate}
+
+      iex> Tempo.SQL.Meta.decode_interval(~s({"from":"2026","direction":7}))
+      {:error, {:invalid_direction, 7}}
+
   """
   @spec decode_interval(String.t() | map()) ::
           {:ok, Tempo.Interval.t()} | {:error, term()}

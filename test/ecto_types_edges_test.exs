@@ -72,6 +72,16 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
       end
     end
 
+    test "a list that is not intervals at all is refused" do
+      # Needs ex_tempo 1.1.1: before that, `IntervalSet.new/1` raised a
+      # FunctionClauseError here instead of returning `{:error, _}`, so
+      # a bad list from a changeset crashed rather than failing to cast.
+      for type <- [IntervalSetType, TempoMultirange] do
+        assert type.cast([:not, :intervals], @second) == :error
+        assert type.cast(["09:00", "10:00"], @second) == :error
+      end
+    end
+
     test "a list holding a member no set can contain is refused" do
       # An open-ended interval has no upper endpoint, so it cannot be a
       # member of a set — `IntervalSet.new/1` says so and the cast

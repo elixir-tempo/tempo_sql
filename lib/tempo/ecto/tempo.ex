@@ -43,7 +43,35 @@ if Code.ensure_loaded?(Ecto.Type) do
     alias Ecto.ParameterizedType
     alias Tempo.SQL.Conversion
 
-    @doc "See `Tempo.Ecto.Interval.cast_type/1`."
+    @doc """
+    Builds the parameterized-type tuple for use outside a schema.
+
+    See `Tempo.Ecto.Interval.cast_type/1` for the schema-side
+    equivalent and the full discussion.
+
+    ### Arguments
+
+    * `options` is a keyword list of options.
+
+    ### Options
+
+    * `:resolution` truncates the materialised endpoints on load to the given component. One of
+      `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
+      Defaults to `:second`.
+
+    ### Returns
+
+    * A `t:Ecto.ParameterizedType.opts/0` tuple.
+
+    ### Examples
+
+        iex> Tempo.Ecto.Tempo.cast_type()
+        {:parameterized, {Tempo.Ecto.Tempo, %{resolution: :second}}}
+
+        iex> Tempo.Ecto.Tempo.cast_type(resolution: :day)
+        {:parameterized, {Tempo.Ecto.Tempo, %{resolution: :day}}}
+
+    """
     def cast_type(options \\ []) do
       ParameterizedType.init(__MODULE__, options)
     end

@@ -19,12 +19,56 @@ defmodule Tempo.SQL.JSON do
 
   alias Tempo.SQL.Meta
 
-  @doc "Postgrex-compatible encoder. Returns iodata."
+  @doc """
+  Encodes a term as JSON iodata, in the shape Postgrex expects of a
+  JSON library.
+
+  ### Arguments
+
+  * `term` is any JSON-serialisable term.
+
+  ### Returns
+
+  * The encoded JSON as iodata. `nil` encodes as JSON `null` rather
+    than as the `:null` atom the raw `:json` module uses.
+
+  ### Examples
+
+      iex> Tempo.SQL.JSON.encode_to_iodata!(%{"hours" => 8})
+      ...> |> IO.iodata_to_binary()
+      ~s({"hours":8})
+
+      iex> Tempo.SQL.JSON.encode_to_iodata!(%{"ends" => nil})
+      ...> |> IO.iodata_to_binary()
+      ~s({"ends":null})
+
+  """
   def encode_to_iodata!(term) do
     :json.encode(term, &Meta.nil_aware_encoder/2)
   end
 
-  @doc "Postgrex-compatible decoder."
+  @doc """
+  Decodes a JSON binary, in the shape Postgrex expects of a JSON
+  library.
+
+  ### Arguments
+
+  * `binary` is the JSON document to decode.
+
+  ### Returns
+
+  * The decoded term, with JSON `null` becoming `nil` rather than the
+    `:null` atom.
+
+  ### Examples
+
+      iex> Tempo.SQL.JSON.decode!(~s({"hours":8}))
+      %{"hours" => 8}
+
+      iex> Tempo.SQL.JSON.decode!(~s({"ends":null}))
+      %{"ends" => nil}
+
+  """
   def decode!(binary) when is_binary(binary) do
     {decoded, :ok, _rest} = :json.decode(binary, :ok, Meta.decode_options())
     decoded

@@ -93,7 +93,11 @@ defmodule Tempo.Sql.MixProject do
 
   defp deps do
     [
-      {:ex_tempo, "~> 1.1"},
+      # 1.1.1 is the floor: before it, `Tempo.IntervalSet.new/1` raised
+      # on a member that was not an interval, so casting a bad list
+      # crashed instead of returning `:error`. The upper bound stays
+      # open to the 1.x series.
+      {:ex_tempo, "~> 1.1 and >= 1.1.1"},
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.19"},

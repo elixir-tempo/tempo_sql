@@ -28,10 +28,15 @@ defmodule Tempo.SQL.Migration do
 
   ### Arguments
 
-    * `field` is the column name as an atom.
+  * `field` is the column name as an atom.
 
-    * `options` are passed through to `Ecto.Migration.add/3` — for
-      example `null: false`, `default: ...`.
+  * `options` are passed through to `Ecto.Migration.add/3` — for
+    example `null: false`, `default: ...`.
+
+  ### Returns
+
+  * The column declaration, as `Ecto.Migration.add/3` returns it. Call
+    it inside a `create table` block.
 
   ### Examples
 
@@ -53,9 +58,14 @@ defmodule Tempo.SQL.Migration do
 
   ### Arguments
 
-    * `field` is the column name as an atom.
+  * `field` is the column name as an atom.
 
-    * `options` are passed through to `Ecto.Migration.add/3`.
+  * `options` are passed through to `Ecto.Migration.add/3`.
+
+  ### Returns
+
+  * The column declaration, as `Ecto.Migration.add/3` returns it. Call
+    it inside a `create table` block.
 
   ### Examples
 
@@ -77,15 +87,21 @@ defmodule Tempo.SQL.Migration do
 
   ### Arguments
 
-    * `table` is the table name.
+  * `table` is the table name.
 
-    * `column` is the range column to index.
+  * `column` is the range column to index.
 
-    * `options` are passed through to `Ecto.Migration.index/3`.
+  * `options` are passed through to `Ecto.Migration.index/3`. The
+    `:using` option defaults to `:gist`.
+
+  ### Returns
+
+  * The index creation, as `Ecto.Migration.create/1` returns it.
 
   ### Examples
 
       create_interval_index :meetings, :window
+      create_interval_index :calendars, :busy_times, name: "calendars_busy_gist"
 
   """
   defmacro create_interval_index(table, column, options \\ []) do
@@ -128,6 +144,22 @@ defmodule Tempo.SQL.Migration do
   `tstzrange` / `tstzmultirange` columns used by
   `Tempo.Ecto.Interval` and `Tempo.Ecto.IntervalSet`.
 
+  ### Returns
+
+  * The two `CREATE TYPE` statements, as `Ecto.Migration.execute/2`
+    returns them. Both are reversible, so a `change/0` that calls this
+    rolls back cleanly.
+
+  ### Examples
+
+      def change do
+        create_tempo_types()
+
+        create table(:meetings) do
+          add_tempo_range :window
+        end
+      end
+
   """
   def create_tempo_types do
     Migration.execute(
@@ -154,10 +186,20 @@ defmodule Tempo.SQL.Migration do
   end
 
   @doc """
-  Drop the composite types created by `create_tempo_types/0`.
+  Drops the composite types created by `create_tempo_types/0`.
 
-  Intended for use in `down/0` callbacks. Fails if any column
-  still uses either type — drop the columns first.
+  Intended for use in `down/0` callbacks. Fails if any column still
+  uses either type — drop those columns first.
+
+  ### Returns
+
+  * The two `DROP TYPE` statements, as `Ecto.Migration.execute/2`
+    returns them.
+
+  ### Examples
+
+      def up,   do: create_tempo_types()
+      def down, do: drop_tempo_types()
 
   """
   def drop_tempo_types do
@@ -185,10 +227,21 @@ defmodule Tempo.SQL.Migration do
   end
 
   @doc """
-  Add a `tempo_range` column for a `Tempo.Ecto.TempoRange` field.
+  Adds a `tempo_range` column for a `Tempo.Ecto.TempoRange` field.
 
   Requires `create_tempo_types/0` to have been run in an earlier
-  migration.
+  migration, or earlier in this one.
+
+  ### Arguments
+
+  * `field` is the column name as an atom.
+
+  * `options` are passed through to `Ecto.Migration.add/3`.
+
+  ### Returns
+
+  * The column declaration, as `Ecto.Migration.add/3` returns it. Call
+    it inside a `create table` block.
 
   ### Examples
 
@@ -203,11 +256,27 @@ defmodule Tempo.SQL.Migration do
   end
 
   @doc """
-  Add a `tempo_multirange` column for a
-  `Tempo.Ecto.TempoMultirange` field.
+  Adds a `tempo_multirange` column for a `Tempo.Ecto.TempoMultirange`
+  field.
 
   Requires `create_tempo_types/0` to have been run in an earlier
-  migration.
+  migration, or earlier in this one.
+
+  ### Arguments
+
+  * `field` is the column name as an atom.
+
+  * `options` are passed through to `Ecto.Migration.add/3`.
+
+  ### Returns
+
+  * The column declaration, as `Ecto.Migration.add/3` returns it. Call
+    it inside a `create table` block.
+
+  ### Examples
+
+      add_tempo_multirange :busy_times
+      add_tempo_multirange :busy_times, null: false
 
   """
   defmacro add_tempo_multirange(field, options \\ []) do

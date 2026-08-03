@@ -37,16 +37,58 @@ defmodule Tempo.SQL.Conversion do
   @time_components [:year, :month, :day, :hour, :minute, :second]
 
   @doc """
-  The valid values for the `:resolution` option on the Ecto types.
+  Returns the valid values for the `:resolution` option on the Ecto
+  types.
+
+  ### Returns
+
+  * A list of resolution atoms, coarsest first.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.valid_resolutions()
+      [:year, :month, :day, :hour, :minute, :second]
+
   """
   def valid_resolutions, do: @resolutions
 
   @doc """
-  Convert a `t:Tempo.Interval.t/0` into a `%Postgrex.Range{}` with
+  Converts a `t:Tempo.Interval.t/0` into a `%Postgrex.Range{}` with
   `DateTime` bounds in UTC.
 
-  Returns `{:ok, range}` on success, `{:error, exception}` when the
-  interval violates the storage contract.
+  The range is half-open — lower inclusive, upper exclusive — matching
+  Tempo's `[from, to)` convention exactly, so no boundary is gained or
+  lost in storage.
+
+  ### Arguments
+
+  * `interval` is the `t:Tempo.Interval.t/0` to convert.
+
+  ### Returns
+
+  * `{:ok, range}` where `range` is a `t:Postgrex.Range.t/0`.
+
+  * `{:error, exception}` where `exception` is a
+    `t:Tempo.SQL.UnsupportedValueError.t/0`, when the interval holds
+    something a `tstzrange` cannot — see the storage-contract guide.
+
+  ### Examples
+
+      iex> workday = Tempo.Interval.new!(
+      ...>   from: ~o"2027-06-15T09:00:00",
+      ...>   to: ~o"2027-06-15T17:00:00"
+      ...> )
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_range(workday)
+      iex> {range.lower, range.upper}
+      {~U[2027-06-15 09:00:00Z], ~U[2027-06-15 17:00:00Z]}
+      iex> {range.lower_inclusive, range.upper_inclusive}
+      {true, false}
+
+      iex> uncertain = %Tempo.Interval{from: ~o"1984?", to: ~o"2004"}
+      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(uncertain)
+      iex> error.reason
+      :qualification
+
   """
   @spec interval_to_range(Tempo.Interval.t()) ::
           {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
@@ -78,6 +120,37 @@ defmodule Tempo.SQL.Conversion do
 
   Endpoints are materialised via `Tempo.to_interval/1` where
   needed to produce usable DateTime bounds.
+
+  ### Arguments
+
+  * `interval` is the `t:Tempo.Interval.t/0` to convert.
+
+  ### Returns
+
+  * `{:ok, range}` where `range` is a `t:Postgrex.Range.t/0`. An open
+    endpoint becomes `:unbound`, so an interval with no stated end is
+    still queryable.
+
+  * `{:error, exception}` when an endpoint has no position on the time
+    line at all — a bare duration, for instance.
+
+  ### Examples
+
+      iex> workday = Tempo.Interval.new!(
+      ...>   from: ~o"2027-06-15T09:00:00",
+      ...>   to: ~o"2027-06-15T17:00:00"
+      ...> )
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(workday)
+      iex> range.upper
+      ~U[2027-06-15 17:00:00Z]
+
+  An open-ended interval keeps a usable lower bound:
+
+      iex> {:ok, ongoing} = Tempo.Interval.new(from: ~o"2027-06-15T09:00:00", to: :undefined)
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(ongoing)
+      iex> range.upper
+      :unbound
+
   """
   @spec interval_to_queryable_range(Tempo.Interval.t()) ::
           {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
@@ -132,13 +205,51 @@ defmodule Tempo.SQL.Conversion do
   Tempo is second-resolution so the shift is exact — the loaded
   interval covers the same instants as the stored range.
 
+  ### Arguments
+
+  * `range` is the `t:Postgrex.Range.t/0` to convert.
+
+  * `options` is a keyword list of options.
+
   ### Options
 
-    * `:resolution` truncates both endpoints to the given
-      component, dropping all sub-components. Must be one of
-      `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
-      Defaults to `:second` (no truncation). See the storage
-      contract guide for semantics.
+  * `:resolution` truncates both endpoints to the given component,
+    dropping all sub-components. Must be one of `:year`, `:month`,
+    `:day`, `:hour`, `:minute`, or `:second`. Defaults to `:second`
+    (no truncation). See the storage contract guide for semantics.
+
+  ### Returns
+
+  * `{:ok, interval}` where `interval` is a `t:Tempo.Interval.t/0`.
+
+  * `{:error, exception}` when an endpoint is not a time, or when
+    truncating to the requested resolution would collapse the span to
+    zero extent.
+
+  ### Examples
+
+      iex> range = %Postgrex.Range{
+      ...>   lower: ~U[2027-06-15 09:00:00Z],
+      ...>   upper: ~U[2027-06-15 17:00:00Z],
+      ...>   lower_inclusive: true,
+      ...>   upper_inclusive: false
+      ...> }
+      iex> {:ok, interval} = Tempo.SQL.Conversion.range_to_interval(range)
+      iex> {Tempo.hour(interval.from), Tempo.hour(interval.to)}
+      {9, 17}
+
+  An inclusive upper bound is shifted out by a second, so the loaded
+  interval covers the same instants as the stored range:
+
+      iex> closed = %Postgrex.Range{
+      ...>   lower: ~U[2027-06-15 09:00:00Z],
+      ...>   upper: ~U[2027-06-15 17:00:00Z],
+      ...>   lower_inclusive: true,
+      ...>   upper_inclusive: true
+      ...> }
+      iex> {:ok, interval} = Tempo.SQL.Conversion.range_to_interval(closed)
+      iex> Tempo.second(interval.to)
+      1
 
   """
   @spec range_to_interval(Postgrex.Range.t(), keyword()) ::
@@ -185,8 +296,27 @@ defmodule Tempo.SQL.Conversion do
     do: NaiveDateTime.add(ndt, 1, :second)
 
   @doc """
-  Validate a `:resolution` option value. Returns the atom
-  unchanged or raises `ArgumentError`.
+  Validates a `:resolution` option value.
+
+  ### Arguments
+
+  * `resolution` is the value to validate.
+
+  ### Returns
+
+  * The resolution atom unchanged, when it is one of those returned by
+    `valid_resolutions/0`.
+
+  * Raises `ArgumentError` otherwise, naming the value it was given.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.validate_resolution!(:day)
+      :day
+
+      iex> Tempo.SQL.Conversion.validate_resolution!(:fortnight)
+      ** (ArgumentError) expected :resolution to be one of [:year, :month, :day, :hour, :minute, :second], got: :fortnight
+
   """
   def validate_resolution!(resolution) when resolution in @resolutions, do: resolution
 
@@ -196,8 +326,30 @@ defmodule Tempo.SQL.Conversion do
   end
 
   @doc """
-  Truncate a `t:Tempo.t/0` token list to the given resolution,
+  Truncates a `t:Tempo.t/0` token list to the given resolution,
   dropping all sub-resolution components.
+
+  ### Arguments
+
+  * `tempo` is the `t:Tempo.t/0` to truncate.
+
+  * `resolution` is the coarsest component to keep — one of those
+    returned by `valid_resolutions/0`.
+
+  ### Returns
+
+  * A `t:Tempo.t/0` carrying only components at or above `resolution`.
+    A value already coarser than the requested resolution is returned
+    unchanged.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.truncate_tempo(~o"2027-06-15T09:30:45", :day)
+      ~o"2027Y6M15D"
+
+      iex> Tempo.SQL.Conversion.truncate_tempo(~o"2027Y", :second)
+      ~o"2027Y"
+
   """
   @spec truncate_tempo(Tempo.t(), atom()) :: Tempo.t()
   def truncate_tempo(%Tempo{time: time} = tempo, resolution) do

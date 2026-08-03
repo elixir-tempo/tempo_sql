@@ -4,6 +4,10 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 ## [0.2.0] — 2026-08-03
 
+### Added
+
+* Every public function now carries an `### Examples` section, and every example that can run without a database runs as a doctest on each test build. The library previously had none, so its documentation was never checked against its code.
+
 ### Fixed
 
 * Recurring intervals stored in a `tempo_range` or `tempo_multirange` column now load back intact. The meta format could not tell an open-ended endpoint from an absent one, so a value like `R5/2022-01-01/P1M` returned with `to: :undefined` and could no longer be rendered at all.
@@ -14,7 +18,7 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 * The composite `meta` format is now version 2, which writes `".."` for an explicitly open-ended endpoint. Version 1 rows keep decoding exactly as before, so no migration is required, but a recurring interval written by 0.1.0 should be rewritten to regain its endpoint.
 
-* Requires `ex_tempo ~> 1.1`. The previous `~> 0.16` constraint could not resolve alongside Tempo 1.x, so the two libraries could not be used together. Verified against Tempo 1.1.0 with the full suite passing; no API changes were needed.
+* Requires `ex_tempo ~> 1.1 and >= 1.1.1`. The previous `~> 0.16` constraint could not resolve alongside Tempo 1.x, so the two libraries could not be used together. The 1.1.1 floor matters on its own: before it, casting a list whose members are not intervals raised rather than returning `:error`, so bad changeset input crashed instead of failing validation.
 
 * Repository links point at the `elixir-tempo` organisation, and the README links the storage-contract guide on HexDocs rather than a GitHub blob.
 
