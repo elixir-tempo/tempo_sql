@@ -2,7 +2,7 @@
 
 All notable changes to `ex_tempo_sql` are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-03
 
 ### Changed
 
