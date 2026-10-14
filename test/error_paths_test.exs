@@ -22,11 +22,11 @@ defmodule Tempo.SQL.ErrorPathsTest do
 
   @second %{resolution: :second}
 
-  defp interval, do: Tempo.Interval.new!(from: ~o"2027-06-15T09:00", to: ~o"2027-06-15T10:00")
+  defp interval, do: ~o"2027-06-15T09:00/2027-06-15T10:00"
 
-  # An interval whose `to` is a duration has no second endpoint on the
-  # time line, so no range can be built from it.
-  defp unpositioned, do: %Tempo.Interval{from: ~o"2027-06-15T09:00", to: ~o"PT1H"}
+  # A time of day with no date has no place on the time line, so no range
+  # can be built from it.
+  defp unpositioned, do: ~o"T09/T10"
 
   defp bad_range do
     %Postgrex.Range{lower: :bogus, upper: :bogus, lower_inclusive: true, upper_inclusive: false}
@@ -34,14 +34,14 @@ defmodule Tempo.SQL.ErrorPathsTest do
 
   defp bad_multirange, do: %Postgrex.Multirange{ranges: [bad_range()]}
 
-  # Two disjoint years — an interval set, not a single span.
-  defp disjoint, do: Tempo.from_iso8601!("{2027,2029}Y")
+  # Two disjoint years — a set, not a single span.
+  defp disjoint, do: ~o"{2027,2029}Y"
 
   describe "the default-argument forms" do
     test "load/1 uses second resolution" do
       {:ok, dumped} = IntervalType.dump(interval())
 
-      assert {:ok, %Tempo.Interval{}} = IntervalType.load(dumped)
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} = IntervalType.load(dumped)
     end
 
     test "dump/1 works without a dumper or params" do
@@ -54,10 +54,11 @@ defmodule Tempo.SQL.ErrorPathsTest do
       set = Tempo.IntervalSet.new!([interval()])
 
       {:ok, dumped} = IntervalSetType.dump(set)
-      assert {:ok, %Tempo.IntervalSet{}} = IntervalSetType.load(dumped)
+      assert {:ok, loaded} = IntervalSetType.load(dumped)
+      assert Tempo.IntervalSet.count(loaded) == 1
 
       {:ok, composite} = TempoMultirange.dump(set)
-      assert {:ok, %Tempo.IntervalSet{}} = TempoMultirange.load(composite)
+      assert {:ok, ^set} = TempoMultirange.load(composite)
     end
 
     test "cast_type/0 defaults to second resolution on every type" do
@@ -92,16 +93,17 @@ defmodule Tempo.SQL.ErrorPathsTest do
     end
 
     test "a set containing one is refused too" do
-      unanchorable = %Tempo.IntervalSet{intervals: [unpositioned()]}
+      unanchorable = Tempo.IntervalSet.new!([unpositioned()])
 
       assert TempoMultirange.dump(unanchorable, nil, @second) == :error
       assert IntervalSetType.dump(unanchorable, nil, @second) == :error
     end
   end
 
-  describe "a Tempo that is not a single span" do
-    test "the composite refuses to dump it" do
-      assert TempoRange.dump(disjoint(), nil, @second) == :error
+  describe "an expression that is not a single span" do
+    test "the composite stores it as the stretch it covers" do
+      assert {:ok, {range, "second", _meta}} = TempoRange.dump(disjoint(), nil, @second)
+      assert {range.lower, range.upper} == {~U[2027-01-01 00:00:00Z], ~U[2030-01-01 00:00:00Z]}
     end
 
     test "the plain interval type refuses to cast it" do
@@ -122,65 +124,60 @@ defmodule Tempo.SQL.ErrorPathsTest do
   end
 
   describe "composite metadata that does not decode" do
-    test "a meta document with no intervals key" do
+    test "a meta document with neither an expression nor intervals" do
       {:ok, multirange} = IntervalSetType.dump(Tempo.IntervalSet.new!([interval()]))
 
-      assert {:error, _} =
-               TempoMultirange.load({multirange, "second", ~s({"v":2})}, nil, @second)
+      assert TempoMultirange.load({multirange, "second", ~s({"v":2})}, nil, @second) == :error
     end
 
     test "a meta document whose members do not decode" do
       {:ok, multirange} = IntervalSetType.dump(Tempo.IntervalSet.new!([interval()]))
       corrupt = ~s({"v":2,"intervals":[{"from":"not-a-date","to":"2027"}],"metadata":{}})
 
-      assert {:error, _} = TempoMultirange.load({multirange, "second", corrupt}, nil, @second)
+      assert TempoMultirange.load({multirange, "second", corrupt}, nil, @second) == :error
+    end
+
+    test "a version 3 expression that does not read" do
+      {:ok, range} = IntervalType.dump(interval())
+      corrupt = ~s({"v":3,"expression":"not-a-date"})
+
+      assert TempoRange.load({range, "second", corrupt}, nil, @second) == :error
     end
   end
 
-  describe "meta fields the common path never writes" do
-    test "a backward interval keeps its direction" do
-      backward = %Tempo.Interval{from: ~o"2027-06-15", to: ~o"2027-06-16", direction: -1}
-
-      json = backward |> Meta.encode_interval() |> IO.iodata_to_binary()
-
-      assert Meta.decode_json(json)["direction"] == -1
-      assert {:ok, loaded} = Meta.decode_interval(json)
-      assert loaded.direction == -1
+  describe "version 2 meta fields the common path never wrote" do
+    test "a backward direction is read and changes no span" do
+      assert {:ok, ~o"2027-06-15/2027-06-15"} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2027Y6M15D","to":"2027Y6M16D","direction":-1})
+               )
     end
 
-    test "a duration endpoint survives as a duration" do
-      json = unpositioned() |> Meta.encode_interval() |> IO.iodata_to_binary()
-
-      assert {:ok, loaded} = Meta.decode_interval(json)
-      assert %Tempo.Duration{} = loaded.to
+    test "a duration end survives as a duration" do
+      assert {:ok, ~o"2027-06-15T09:00/PT1H"} =
+               Meta.decode_interval(~s({"v":2,"from":"2027Y6M15DT9H0M","to":"PT1H"}))
     end
 
-    test "a repeat rule survives" do
-      with_rule = %Tempo.Interval{
-        from: ~o"2027-06-15",
-        to: ~o"2027-06-16",
-        repeat_rule: ~o"2027Y"
-      }
-
-      json = with_rule |> Meta.encode_interval() |> IO.iodata_to_binary()
-
-      assert {:ok, loaded} = Meta.decode_interval(json)
-      assert %Tempo{} = loaded.repeat_rule
+    test "a repeat rule that is no selection is refused" do
+      assert {:error, %ArgumentError{}} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2027Y6M15D","to":"2027Y6M16D","repeat_rule":"2027Y"})
+               )
     end
 
-    test "an endpoint that parses to something that is not a time" do
-      # An interval string in an endpoint slot parses, but to an
-      # interval — not a value an endpoint can be.
-      assert {:error, {:unexpected_endpoint_type, _}} =
+    test "an endpoint that reads as something that is not a value" do
+      # An interval in an endpoint slot reads, but as an interval, which
+      # is no end.
+      assert {:error, %Tempo.IntervalEndpointsError{}} =
                Meta.decode_interval(~s({"from":"2027-06-15/2027-06-16","to":"2027-06-17"}))
     end
 
-    test "a duration slot that does not parse at all" do
+    test "a duration slot that does not read at all" do
       assert {:error, %Tempo.ParseError{}} =
                Meta.decode_interval(~s({"from":"2026","to":"2027","duration":"not-a-duration"}))
     end
 
-    test "a repeat rule that does not parse at all" do
+    test "a repeat rule that does not read at all" do
       assert {:error, %Tempo.ParseError{}} =
                Meta.decode_interval(~s({"from":"2026","to":"2027","repeat_rule":"not-a-rule"}))
     end

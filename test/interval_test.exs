@@ -1,9 +1,14 @@
 defmodule Tempo.Ecto.IntervalTest do
   use ExUnit.Case, async: true
 
+  import Tempo.Sigils
+
   alias Tempo.Ecto.Interval
 
   @default_params %{resolution: :second}
+
+  defp half_open(lower, upper),
+    do: %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
 
   describe "type/1" do
     test "reports tstzrange" do
@@ -29,32 +34,37 @@ defmodule Tempo.Ecto.IntervalTest do
   end
 
   describe "dump/3 — the storable shape" do
-    test "dumps a fully-anchored %Tempo.Interval{} as a Postgrex.Range in UTC" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: from, to: to)
+    test "dumps an anchored interval as a Postgrex.Range in UTC" do
+      assert {:ok, %Postgrex.Range{} = range} =
+               Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @default_params)
 
-      assert {:ok, %Postgrex.Range{} = range} = Interval.dump(interval, nil, @default_params)
-      assert %DateTime{year: 2026, month: 6, day: 15, hour: 9} = range.lower
-      assert %DateTime{year: 2026, month: 6, day: 15, hour: 17} = range.upper
+      assert range.lower == ~U[2026-06-15 09:00:00Z]
+      assert range.upper == ~U[2026-06-15 17:00:00Z]
       assert range.lower_inclusive == true
       assert range.upper_inclusive == false
     end
 
-    test "dumps an open-start interval as a Range with :unbound lower" do
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: :undefined, to: to)
+    test "dumps an end written to a date as the instant after it" do
+      assert {:ok, half_open(~U[2026-06-15 00:00:00Z], ~U[2026-06-21 00:00:00Z])} ==
+               Interval.dump(~o"2026-06-15/2026-06-20", nil, @default_params)
+    end
 
-      assert {:ok, %Postgrex.Range{lower: :unbound}} =
-               Interval.dump(interval, nil, @default_params)
+    test "dumps a value as the span it denotes" do
+      assert {:ok, half_open(~U[2026-01-01 00:00:00Z], ~U[2027-01-01 00:00:00Z])} ==
+               Interval.dump(~o"2026", nil, @default_params)
+
+      assert {:ok, half_open(~U[2026-03-16 00:00:00Z], ~U[2026-03-17 00:00:00Z])} ==
+               Interval.dump(~o"2026-075", nil, @default_params)
+    end
+
+    test "dumps an open-start interval as a Range with :unbound lower" do
+      assert {:ok, half_open(:unbound, ~U[2026-06-15 17:00:00Z])} ==
+               Interval.dump(~o"../2026-06-15T17:00:00", nil, @default_params)
     end
 
     test "dumps an open-end interval as a Range with :unbound upper" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: from, to: :undefined)
-
-      assert {:ok, %Postgrex.Range{upper: :unbound}} =
-               Interval.dump(interval, nil, @default_params)
+      assert {:ok, half_open(~U[2026-06-15 09:00:00Z], :unbound)} ==
+               Interval.dump(~o"2026-06-15T09:00:00/..", nil, @default_params)
     end
 
     test "returns nil passthrough" do
@@ -63,54 +73,34 @@ defmodule Tempo.Ecto.IntervalTest do
   end
 
   describe "dump/3 — the contract refusal cases" do
-    test "refuses an interval with a recurrence count" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: from, to: to)
-      recurring = %{interval | recurrence: 5}
-
-      assert :error = Interval.dump(recurring, nil, @default_params)
+    test "refuses a recurrence" do
+      assert :error = Interval.dump(~o"R5/2026-06-15T09:00:00/PT1H", nil, @default_params)
     end
 
-    test "refuses an interval with a repeat rule" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: from, to: to)
-      rule = %Tempo{time: [year: 2026]}
-
-      assert :error = Interval.dump(%{interval | repeat_rule: rule}, nil, @default_params)
+    test "refuses a set" do
+      assert :error = Interval.dump(~o"{2026-06-15,2026-06-17}", nil, @default_params)
     end
 
     test "refuses a fully-unbounded interval" do
-      {:ok, interval} = Tempo.Interval.new(from: :undefined, to: :undefined, duration: nil)
-      assert :error = Interval.dump(interval, nil, @default_params)
+      assert :error = Interval.dump(~o"../..", nil, @default_params)
     end
 
-    test "accepts a year-only Tempo endpoint — fills in calendar defaults" do
-      partial = %Tempo{time: [year: 2026]}
-      to = Tempo.from_iso8601!("2027-01-01T00:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: partial, to: to)
-
-      assert {:ok, %Postgrex.Range{lower: ~U[2026-01-01 00:00:00Z]}} =
-               Interval.dump(interval, nil, @default_params)
+    test "refuses a qualified value" do
+      assert :error = Interval.dump(~o"1984?", nil, @default_params)
     end
 
-    test "refuses an ordinal-date Tempo endpoint (must be materialised first)" do
-      ordinal = %Tempo{time: [year: 2026, day: 75]}
-      to = Tempo.from_iso8601!("2027-01-01T00:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: ordinal, to: to)
-
-      assert :error = Interval.dump(interval, nil, @default_params)
+    test "refuses a value of another calendar" do
+      assert :error = Interval.dump(~o"5786-10-01[u-ca=hebrew]", nil, @default_params)
     end
 
-    test "refuses a non-%Tempo.Interval{} value" do
+    test "refuses what is not an expression" do
       assert :error = Interval.dump("not a range", nil, @default_params)
       assert :error = Interval.dump(42, nil, @default_params)
     end
   end
 
   describe "load/3 — default :second resolution" do
-    test "loads a Postgrex.Range back into a %Tempo.Interval{}" do
+    test "loads a Postgrex.Range back into an interval in UTC" do
       range = %Postgrex.Range{
         lower: ~U[2026-06-15 09:00:00Z],
         upper: ~U[2026-06-15 17:00:00Z],
@@ -118,21 +108,14 @@ defmodule Tempo.Ecto.IntervalTest do
         upper_inclusive: false
       }
 
-      assert {:ok, %Tempo.Interval{from: %Tempo{}, to: %Tempo{}} = interval} =
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"} =
                Interval.load(range, nil, @default_params)
-
-      assert Keyword.get(interval.from.time, :year) == 2026
-      assert Keyword.get(interval.from.time, :hour) == 9
-      assert Keyword.get(interval.to.time, :hour) == 17
     end
 
-    test "loads an unbound lower as :undefined" do
-      range = %Postgrex.Range{
-        lower: :unbound,
-        upper: ~U[2026-06-15 17:00:00Z]
-      }
+    test "loads an unbound lower as an open start" do
+      range = half_open(:unbound, ~U[2026-06-15 17:00:00Z])
 
-      assert {:ok, %Tempo.Interval{from: :undefined}} = Interval.load(range, nil, @default_params)
+      assert {:ok, ~o"../2026-06-15T17:00:00Z"} = Interval.load(range, nil, @default_params)
     end
 
     test "returns nil passthrough" do
@@ -140,68 +123,45 @@ defmodule Tempo.Ecto.IntervalTest do
     end
   end
 
-  describe "load/3 — :resolution option truncates endpoints" do
-    test "resolution: :year strips down to year" do
-      params = Interval.init(resolution: :year)
+  describe "load/3 — :resolution writes the ends to a unit" do
+    test "resolution: :year reads a year through a year" do
+      range = half_open(~U[2026-01-01 00:00:00Z], ~U[2027-01-01 00:00:00Z])
 
-      range = %Postgrex.Range{
-        lower: ~U[2026-01-01 00:00:00Z],
-        upper: ~U[2027-01-01 00:00:00Z],
-        lower_inclusive: true,
-        upper_inclusive: false
-      }
-
-      {:ok, interval} = Interval.load(range, nil, params)
-
-      assert interval.from.time == [year: 2026]
-      assert interval.to.time == [year: 2027]
+      assert {:ok, ~o"2026YZ/2026YZ"} =
+               Interval.load(range, nil, Interval.init(resolution: :year))
     end
 
-    test "resolution: :month strips down to year+month" do
-      params = Interval.init(resolution: :month)
+    test "resolution: :month reads a month through a month" do
+      range = half_open(~U[2026-06-01 00:00:00Z], ~U[2026-07-01 00:00:00Z])
 
-      range = %Postgrex.Range{
-        lower: ~U[2026-06-01 00:00:00Z],
-        upper: ~U[2026-07-01 00:00:00Z]
-      }
-
-      {:ok, interval} = Interval.load(range, nil, params)
-
-      assert interval.from.time == [year: 2026, month: 6]
-      assert interval.to.time == [year: 2026, month: 7]
+      assert {:ok, ~o"2026Y6MZ/2026Y6MZ"} =
+               Interval.load(range, nil, Interval.init(resolution: :month))
     end
 
-    test "resolution: :day strips down to year+month+day" do
-      params = Interval.init(resolution: :day)
+    test "resolution: :day reads a day through a day" do
+      range = half_open(~U[2026-06-15 00:00:00Z], ~U[2026-06-16 00:00:00Z])
 
-      range = %Postgrex.Range{
-        lower: ~U[2026-06-15 00:00:00Z],
-        upper: ~U[2026-06-16 00:00:00Z]
-      }
-
-      {:ok, interval} = Interval.load(range, nil, params)
-
-      assert interval.from.time == [year: 2026, month: 6, day: 15]
-      assert interval.to.time == [year: 2026, month: 6, day: 16]
+      assert {:ok, ~o"2026Y6M15DZ/2026Y6M15DZ"} =
+               Interval.load(range, nil, Interval.init(resolution: :day))
     end
 
-    test "resolution: :hour keeps down to hour" do
-      params = Interval.init(resolution: :hour)
+    test "resolution: :hour reads the hours as boundaries" do
+      range = half_open(~U[2026-06-15 09:00:00Z], ~U[2026-06-15 10:00:00Z])
 
-      range = %Postgrex.Range{
-        lower: ~U[2026-06-15 09:00:00Z],
-        upper: ~U[2026-06-15 10:00:00Z]
-      }
+      assert {:ok, ~o"2026-06-15T09Z/2026-06-15T10Z"} =
+               Interval.load(range, nil, Interval.init(resolution: :hour))
+    end
 
-      {:ok, interval} = Interval.load(range, nil, params)
+    test "the span loaded is the span stored" do
+      range = half_open(~U[2026-06-01 00:00:00Z], ~U[2026-07-01 00:00:00Z])
+      {:ok, june} = Interval.load(range, nil, Interval.init(resolution: :month))
 
-      assert interval.from.time == [year: 2026, month: 6, day: 15, hour: 9]
-      assert interval.to.time == [year: 2026, month: 6, day: 15, hour: 10]
+      assert {:ok, ^range} = Interval.dump(june, nil, @default_params)
     end
   end
 
   describe "load/3 — bracket normalisation" do
-    test "[] closed range shifts upper by one second to [)" do
+    test "[] closed range moves the upper one second on, to [)" do
       range = %Postgrex.Range{
         lower: ~U[2026-06-15 09:00:00Z],
         upper: ~U[2026-06-15 09:59:59Z],
@@ -209,13 +169,11 @@ defmodule Tempo.Ecto.IntervalTest do
         upper_inclusive: true
       }
 
-      {:ok, interval} = Interval.load(range, nil, @default_params)
-
-      assert Keyword.get(interval.to.time, :minute) == 0
-      assert Keyword.get(interval.to.time, :hour) == 10
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"} =
+               Interval.load(range, nil, @default_params)
     end
 
-    test "(] range shifts both endpoints by one second to [)" do
+    test "(] range moves both ends one second on, to [)" do
       range = %Postgrex.Range{
         lower: ~U[2026-06-15 08:59:59Z],
         upper: ~U[2026-06-15 09:59:59Z],
@@ -223,14 +181,11 @@ defmodule Tempo.Ecto.IntervalTest do
         upper_inclusive: true
       }
 
-      {:ok, interval} = Interval.load(range, nil, @default_params)
-
-      assert Keyword.get(interval.from.time, :hour) == 9
-      assert Keyword.get(interval.from.time, :minute) == 0
-      assert Keyword.get(interval.to.time, :hour) == 10
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"} =
+               Interval.load(range, nil, @default_params)
     end
 
-    test "() open range shifts lower by one second to [)" do
+    test "() open range moves the lower one second on, to [)" do
       range = %Postgrex.Range{
         lower: ~U[2026-06-15 08:59:59Z],
         upper: ~U[2026-06-15 10:00:00Z],
@@ -238,37 +193,32 @@ defmodule Tempo.Ecto.IntervalTest do
         upper_inclusive: false
       }
 
-      {:ok, interval} = Interval.load(range, nil, @default_params)
-
-      assert Keyword.get(interval.from.time, :hour) == 9
-      assert Keyword.get(interval.from.time, :minute) == 0
-      assert Keyword.get(interval.to.time, :hour) == 10
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"} =
+               Interval.load(range, nil, @default_params)
     end
   end
 
   describe "cast/2 — the input-accepting surface" do
-    test "accepts a %Tempo.Interval{} unchanged" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Tempo.Interval.new(from: from, to: to)
+    test "accepts an interval unchanged" do
+      interval = ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"
 
       assert {:ok, ^interval} = Interval.cast(interval, @default_params)
     end
 
-    test "materialises a bare %Tempo{} via Tempo.to_interval/1" do
-      tempo = Tempo.from_iso8601!("2026-06-15")
-
-      assert {:ok, %Tempo.Interval{from: %Tempo{}, to: %Tempo{}}} =
-               Interval.cast(tempo, @default_params)
+    test "makes a value the interval it denotes" do
+      assert {:ok, ~o"2026-06-15/2026-06-15"} = Interval.cast(~o"2026-06-15", @default_params)
     end
 
     test "accepts a Postgrex.Range" do
-      range = %Postgrex.Range{
-        lower: ~U[2026-06-15 09:00:00Z],
-        upper: ~U[2026-06-15 17:00:00Z]
-      }
+      range = half_open(~U[2026-06-15 09:00:00Z], ~U[2026-06-15 17:00:00Z])
 
-      assert {:ok, %Tempo.Interval{}} = Interval.cast(range, @default_params)
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"} =
+               Interval.cast(range, @default_params)
+    end
+
+    test "rejects an expression of more than one span" do
+      assert :error = Interval.cast(~o"{2026-06-15,2026-06-17}", @default_params)
+      assert :error = Interval.cast(~o"R5/2026-06-15T09:00:00/PT1H", @default_params)
     end
 
     test "rejects unknown input" do
@@ -278,17 +228,20 @@ defmodule Tempo.Ecto.IntervalTest do
   end
 
   describe "round-trip" do
-    test "an anchored interval dumps and loads back with the same endpoints" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, original} = Tempo.Interval.new(from: from, to: to)
+    test "an anchored interval dumps and loads back as the same span" do
+      original = ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"
 
       {:ok, range} = Interval.dump(original, nil, @default_params)
-      {:ok, loaded} = Interval.load(range, nil, @default_params)
 
-      assert Keyword.get(loaded.from.time, :year) == 2026
-      assert Keyword.get(loaded.from.time, :hour) == 9
-      assert Keyword.get(loaded.to.time, :hour) == 17
+      assert {:ok, ^original} = Interval.load(range, nil, @default_params)
+    end
+
+    test "a floating interval is stored as if it were in UTC" do
+      {:ok, range} =
+        Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @default_params)
+
+      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"} =
+               Interval.load(range, nil, @default_params)
     end
   end
 end

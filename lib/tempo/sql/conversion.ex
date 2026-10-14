@@ -1,40 +1,35 @@
 defmodule Tempo.SQL.Conversion do
   @moduledoc """
-  Internal helpers that translate between `t:Tempo.Interval.t/0`
-  endpoints and the `DateTime` / `:unbound` values that
-  `Postgrex.Range` understands.
+  Internal helpers that translate between Tempo intervals and the
+  `DateTime` / `:unbound` values that `Postgrex.Range` understands.
 
   The storage contract this module enforces — see the README for
   the full rationale:
 
-    * `%Tempo{}` endpoints must carry a fully anchored
-      year/month/day/hour/minute/second time slot (Tempo's highest
-      resolution). Partial values must be materialised via
-      `Tempo.to_interval/1` first.
+    * An interval is stored as the instants it runs between
+      (`Tempo.Interval.instants/1`): from the instant it begins to
+      the instant it ends, half-open. An end written to a date is read
+      through it, so `2026-06-15/2026-06-20` is stored up to the 21st.
 
-    * `:qualification`, `:qualifications`, and `:extended` metadata
-      are *dropped on storage* — round-tripping is lossy by design
-      for round 1.
+    * A value with no zone is stored as though at UTC.
 
-    * Non-Gregorian calendars are rejected.
+    * Qualifications (`:uncertain`, `:approximate`) and calendars other
+      than the Gregorian are rejected by the plain types, which cannot
+      keep them; the composite types keep them in their `meta` column.
 
-    * Multi-valued token slots (lists like `day_of_week: [1, 3, 5]`
-      or ranges like `day: 1..15`) are rejected.
-
-    * `Tempo.Interval` recurrence (`:recurrence`, `:repeat_rule`)
-      is rejected — callers must materialise recurring intervals to
-      a `Tempo.IntervalSet` via `Tempo.to_interval/1` and store
-      that as `tstzmultirange` instead.
+    * A recurrence, or anything else of several spans, is stored by
+      `Tempo.Ecto.IntervalSet` as a `tstzmultirange`, not by the plain
+      interval types.
 
   """
 
   alias Tempo.Interval
+  alias Tempo.IntervalSet
   alias Tempo.SQL.UnsupportedValueError
 
-  @gregorian_calendars [nil, Calendar.ISO, Calendrical.Gregorian]
-
+  @gregorian_calendars [Calendar.ISO, Calendrical.Gregorian]
   @resolutions [:year, :month, :day, :hour, :minute, :second]
-  @time_components [:year, :month, :day, :hour, :minute, :second]
+  @clock_resolutions [:hour, :minute, :second]
 
   @doc """
   Returns the valid values for the `:resolution` option on the Ecto
@@ -53,16 +48,16 @@ defmodule Tempo.SQL.Conversion do
   def valid_resolutions, do: @resolutions
 
   @doc """
-  Converts a `t:Tempo.Interval.t/0` into a `%Postgrex.Range{}` with
-  `DateTime` bounds in UTC.
+  Converts an interval into a `%Postgrex.Range{}` with `DateTime`
+  bounds in UTC.
 
-  The range is half-open — lower inclusive, upper exclusive — matching
-  Tempo's `[from, to)` convention exactly, so no boundary is gained or
-  lost in storage.
+  The range is half-open — lower inclusive, upper exclusive — from the
+  instant the interval begins to the instant it ends, so no boundary is
+  gained or lost in storage.
 
   ### Arguments
 
-  * `interval` is the `t:Tempo.Interval.t/0` to convert.
+  * `interval` is a `t:Tempo.t/0` interval.
 
   ### Returns
 
@@ -84,55 +79,52 @@ defmodule Tempo.SQL.Conversion do
       iex> {range.lower_inclusive, range.upper_inclusive}
       {true, false}
 
-      iex> uncertain = %Tempo.Interval{from: ~o"1984?", to: ~o"2004"}
-      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(uncertain)
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_range(~o"2027-06-15/2027-06-20")
+      iex> {range.lower, range.upper}
+      {~U[2027-06-15 00:00:00Z], ~U[2027-06-21 00:00:00Z]}
+
+      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(~o"1984?/2004")
       iex> error.reason
       :qualification
 
   """
-  @spec interval_to_range(Tempo.Interval.t()) ::
+  @spec interval_to_range(Tempo.t()) ::
           {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
-  def interval_to_range(%Tempo.Interval{} = interval) do
-    with :ok <- validate_interval_shape(interval),
-         {:ok, lower} <- endpoint_to_datetime(interval.from),
-         {:ok, upper} <- endpoint_to_datetime(interval.to) do
-      {:ok,
-       %Postgrex.Range{
-         lower: lower,
-         upper: upper,
-         lower_inclusive: true,
-         upper_inclusive: false
-       }}
+  def interval_to_range(%Tempo{} = interval) do
+    with {:ok, span} <- one_span(interval),
+         :ok <- plain(span),
+         {:ok, {from, to}} <- span_instants(span, interval),
+         :ok <- bounded_somewhere(interval, from, to),
+         {:ok, lower} <- utc(from),
+         {:ok, upper} <- utc(to) do
+      {:ok, half_open(lower, upper)}
     end
   end
 
   @doc """
-  Convert a `t:Tempo.Interval.t/0` into a `%Postgrex.Range{}`
-  tolerant enough for the composite `tempo_range` type.
+  Converts any expression into a `%Postgrex.Range{}` tolerant enough
+  for the composite `tempo_range` type.
 
-  Unlike `interval_to_range/1`, this variant accepts Tempo
-  endpoints the plain `tstzrange` encoder rejects — qualifications,
-  non-Gregorian calendars, multi-valued slots, and endpoints still
-  carrying week or day-of-year tokens — because the composite's
-  `meta` column carries the original
-  shape losslessly. The range is still populated from the
-  materialised endpoints so Postgres range-operator queries work.
-
-  Endpoints are materialised via `Tempo.to_interval/1` where
-  needed to produce usable DateTime bounds.
+  Unlike `interval_to_range/1`, this accepts what the plain `tstzrange`
+  encoder rejects — qualifications, calendars other than the Gregorian,
+  values that name several, recurrences — because the composite's
+  `meta` column carries the expression losslessly. The range is the
+  stretch the expression covers, from its first instant to its last, so
+  Postgres range operators still find it.
 
   ### Arguments
 
-  * `interval` is the `t:Tempo.Interval.t/0` to convert.
+  * `expression` is a `t:Tempo.t/0`.
 
   ### Returns
 
   * `{:ok, range}` where `range` is a `t:Postgrex.Range.t/0`. An open
-    endpoint becomes `:unbound`, so an interval with no stated end is
-    still queryable.
+    end, or a recurrence with no end, becomes `:unbound`, so it is still
+    queryable.
 
-  * `{:error, exception}` when an endpoint has no position on the time
-    line at all — a bare duration, for instance.
+  * `{:error, exception}` when the expression has no place on the time
+    line at all — a bare duration, a value with no year, a span open at
+    both ends, or a recurrence counted back with no start.
 
   ### Examples
 
@@ -146,64 +138,43 @@ defmodule Tempo.SQL.Conversion do
 
   An open-ended interval keeps a usable lower bound:
 
-      iex> {:ok, ongoing} = Tempo.Interval.new(from: ~o"2027-06-15T09:00:00", to: :undefined)
-      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(ongoing)
-      iex> range.upper
-      :unbound
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(~o"2027-06-15T09:00:00/..")
+      iex> {range.lower, range.upper}
+      {~U[2027-06-15 09:00:00Z], :unbound}
 
   """
-  @spec interval_to_queryable_range(Tempo.Interval.t()) ::
+  @spec interval_to_queryable_range(Tempo.t() | Tempo.Duration.t()) ::
           {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
-  def interval_to_queryable_range(%Tempo.Interval{} = interval) do
-    with {:ok, lower} <- queryable_endpoint(interval.from),
-         {:ok, upper} <- queryable_endpoint(interval.to) do
-      {:ok,
-       %Postgrex.Range{
-         lower: lower,
-         upper: upper,
-         lower_inclusive: true,
-         upper_inclusive: false
-       }}
-    end
-  end
-
-  defp queryable_endpoint(:undefined), do: {:ok, :unbound}
-  defp queryable_endpoint(nil), do: {:ok, :unbound}
-
-  defp queryable_endpoint(%Tempo{} = tempo) do
-    case Tempo.to_interval(tempo) do
-      {:ok, %Tempo.Interval{from: %Tempo{} = materialised}} ->
-        tempo_to_datetime(materialised)
-
-      _ ->
-        tempo_to_datetime(tempo)
-    end
-  end
-
-  defp queryable_endpoint(%Tempo.Duration{}) do
+  def interval_to_queryable_range(%Tempo.Duration{} = duration) do
     {:error,
      UnsupportedValueError.exception(
        reason: :unsupported_endpoint,
-       message: "cannot derive a queryable range bound from a Tempo.Duration alone"
+       value: duration,
+       message: "cannot derive a queryable range from a Tempo.Duration alone"
      )}
   end
 
+  def interval_to_queryable_range(%Tempo{} = expression) do
+    with {:ok, {from, to}} <- stretch(expression),
+         :ok <- bounded_somewhere(expression, from, to),
+         {:ok, lower} <- utc(from),
+         {:ok, upper} <- utc(to) do
+      {:ok, half_open(lower, upper)}
+    end
+  end
+
   @doc """
-  Convert a `%Postgrex.Range{}` back into a `t:Tempo.Interval.t/0`.
+  Convert a `%Postgrex.Range{}` back into an interval.
 
   Unlike discrete range types (`int4range`, `daterange`), PostgreSQL
   does **not** canonicalise `tstzrange` to `[lower, upper)` on
   output — a range written as `[a, b]` round-trips as `[a, b]`.
   This loader therefore normalises any non-half-open range to
-  Tempo's `[first, last)` convention by shifting the offending
-  endpoint one second:
+  `[lower, upper)` by shifting the offending endpoint one second:
 
     * `[a, b]`  → `[a,         b + 1s)`
     * `(a, b)`  → `[a + 1s,    b)`
     * `(a, b]`  → `[a + 1s,    b + 1s)`
-
-  Tempo is second-resolution so the shift is exact — the loaded
-  interval covers the same instants as the stored range.
 
   ### Arguments
 
@@ -216,15 +187,17 @@ defmodule Tempo.SQL.Conversion do
   * `:resolution` truncates both endpoints to the given component,
     dropping all sub-components. Must be one of `:year`, `:month`,
     `:day`, `:hour`, `:minute`, or `:second`. Defaults to `:second`
-    (no truncation). See the storage contract guide for semantics.
+    (no truncation). An end at a date resolution is read through it,
+    so the range's upper bound becomes the last day, month or year it
+    holds. See the storage contract guide for semantics.
 
   ### Returns
 
-  * `{:ok, interval}` where `interval` is a `t:Tempo.Interval.t/0`.
+  * `{:ok, interval}` where `interval` is a `t:Tempo.t/0` interval.
 
   * `{:error, exception}` when an endpoint is not a time, or when
-    truncating to the requested resolution would collapse the span to
-    zero extent.
+    truncating to the requested resolution leaves the interval ending
+    before it begins.
 
   ### Examples
 
@@ -235,65 +208,35 @@ defmodule Tempo.SQL.Conversion do
       ...>   upper_inclusive: false
       ...> }
       iex> {:ok, interval} = Tempo.SQL.Conversion.range_to_interval(range)
-      iex> {Tempo.hour(interval.from), Tempo.hour(interval.to)}
+      iex> {Tempo.hour(Tempo.Interval.from(interval)), Tempo.hour(Tempo.Interval.to(interval))}
       {9, 17}
 
-  An inclusive upper bound is shifted out by a second, so the loaded
-  interval covers the same instants as the stored range:
+  A range of whole days loaded at the day is the days it holds:
 
-      iex> closed = %Postgrex.Range{
-      ...>   lower: ~U[2027-06-15 09:00:00Z],
-      ...>   upper: ~U[2027-06-15 17:00:00Z],
+      iex> days = %Postgrex.Range{
+      ...>   lower: ~U[2027-06-15 00:00:00Z],
+      ...>   upper: ~U[2027-06-21 00:00:00Z],
       ...>   lower_inclusive: true,
-      ...>   upper_inclusive: true
+      ...>   upper_inclusive: false
       ...> }
-      iex> {:ok, interval} = Tempo.SQL.Conversion.range_to_interval(closed)
-      iex> Tempo.second(interval.to)
-      1
+      iex> Tempo.SQL.Conversion.range_to_interval(days, resolution: :day)
+      {:ok, ~o"2027Y6M15DZ/2027Y6M20DZ"}
 
   """
   @spec range_to_interval(Postgrex.Range.t(), keyword()) ::
-          {:ok, Tempo.Interval.t()} | {:error, UnsupportedValueError.t()}
+          {:ok, Tempo.t()} | {:error, Exception.t()}
   def range_to_interval(range, options \\ [])
 
   def range_to_interval(%Postgrex.Range{} = range, options) do
     resolution = Keyword.get(options, :resolution, :second)
-
-    with {:ok, normalised} <- normalise_brackets(range),
-         {:ok, from} <- datetime_to_endpoint(normalised.lower, resolution),
-         {:ok, to} <- datetime_to_endpoint(normalised.upper, resolution) do
-      Interval.new(from: from, to: to)
-    end
-  end
-
-  defp normalise_brackets(%Postgrex.Range{} = range) do
     lower = shift_lower_to_inclusive(range.lower, range.lower_inclusive)
     upper = shift_upper_to_exclusive(range.upper, range.upper_inclusive)
 
-    {:ok,
-     %{
-       lower: lower,
-       upper: upper,
-       lower_inclusive: true,
-       upper_inclusive: false
-     }}
+    with {:ok, from} <- lower_end(lower, resolution),
+         {:ok, to} <- upper_end(upper, resolution) do
+      Interval.new(from: from, to: to)
+    end
   end
-
-  defp shift_lower_to_inclusive(:unbound, _), do: :unbound
-  defp shift_lower_to_inclusive(nil, _), do: :unbound
-  defp shift_lower_to_inclusive(value, true), do: value
-  defp shift_lower_to_inclusive(%DateTime{} = dt, false), do: DateTime.add(dt, 1, :second)
-
-  defp shift_lower_to_inclusive(%NaiveDateTime{} = ndt, false),
-    do: NaiveDateTime.add(ndt, 1, :second)
-
-  defp shift_upper_to_exclusive(:unbound, _), do: :unbound
-  defp shift_upper_to_exclusive(nil, _), do: :unbound
-  defp shift_upper_to_exclusive(value, false), do: value
-  defp shift_upper_to_exclusive(%DateTime{} = dt, true), do: DateTime.add(dt, 1, :second)
-
-  defp shift_upper_to_exclusive(%NaiveDateTime{} = ndt, true),
-    do: NaiveDateTime.add(ndt, 1, :second)
 
   @doc """
   Validates a `:resolution` option value.
@@ -326,21 +269,20 @@ defmodule Tempo.SQL.Conversion do
   end
 
   @doc """
-  Truncates a `t:Tempo.t/0` token list to the given resolution,
-  dropping all sub-resolution components.
+  Truncates a value to the given resolution, dropping all finer
+  components.
 
   ### Arguments
 
-  * `tempo` is the `t:Tempo.t/0` to truncate.
+  * `tempo` is the `t:Tempo.t/0` value to truncate.
 
   * `resolution` is the coarsest component to keep — one of those
     returned by `valid_resolutions/0`.
 
   ### Returns
 
-  * A `t:Tempo.t/0` carrying only components at or above `resolution`.
-    A value already coarser than the requested resolution is returned
-    unchanged.
+  * A `t:Tempo.t/0`. A value already coarser than the requested
+    resolution is returned unchanged.
 
   ### Examples
 
@@ -352,182 +294,272 @@ defmodule Tempo.SQL.Conversion do
 
   """
   @spec truncate_tempo(Tempo.t(), atom()) :: Tempo.t()
-  def truncate_tempo(%Tempo{time: time} = tempo, resolution) do
-    %{tempo | time: truncate_time(time, resolution)}
+  def truncate_tempo(%Tempo{} = tempo, resolution) do
+    case Tempo.trunc(tempo, resolution) do
+      {:ok, truncated} -> truncated
+      {:error, _} -> tempo
+    end
   end
 
-  defp truncate_time(time, resolution) do
-    keep =
-      @time_components
-      |> Enum.take_while(&(&1 != resolution))
-      |> Kernel.++([resolution])
+  @doc """
+  The one interval an expression is: an interval itself, or a value as
+  the interval it names.
 
-    Enum.filter(time, fn {key, _value} -> key in keep end)
+  ### Arguments
+
+  * `expression` is a `t:Tempo.t/0`.
+
+  ### Returns
+
+  * `{:ok, interval}`, a `t:Tempo.t/0` interval.
+
+  * `{:error, exception}` for an expression of several spans (a value
+    naming several, a recurrence, a set) or with none.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.as_interval(~o"2027-06")
+      {:ok, ~o"2027-06/2027-06"}
+
+      iex> {:error, error} = Tempo.SQL.Conversion.as_interval(~o"R3/2027-06-01/P1D")
+      iex> error.reason
+      :multi_valued_slot
+
+  """
+  @spec as_interval(Tempo.t()) :: {:ok, Tempo.t()} | {:error, UnsupportedValueError.t()}
+  def as_interval(%Tempo{} = expression), do: one_span(expression)
+
+  @doc """
+  The intervals an expression covers, each a span, in order.
+
+  ### Arguments
+
+  * `expression` is a `t:Tempo.t/0` with a last span.
+
+  ### Returns
+
+  * `{:ok, intervals}`, a list of `t:Tempo.t/0` intervals.
+
+  * `{:error, exception}` for an expression with no end or no spans.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.intervals(~o"R2/2027-06-01/P1D")
+      {:ok, [~o"2027-06-01/2027-06-01", ~o"2027-06-02/2027-06-02"]}
+
+  """
+  @spec intervals(Tempo.t()) :: {:ok, [Tempo.t()]} | {:error, UnsupportedValueError.t()}
+  def intervals(%Tempo{} = expression) do
+    case Tempo.to_interval(expression) do
+      {:ok, interval} -> {:ok, IntervalSet.members(interval)}
+      {:error, exception} -> {:error, unsupported(:open_ended_member, expression, exception)}
+    end
   end
 
   # ------------------------------------------------------------------
-  # Endpoint ↔ DateTime
+  # Interval → instants
   # ------------------------------------------------------------------
 
-  defp endpoint_to_datetime(:undefined), do: {:ok, :unbound}
-  defp endpoint_to_datetime(nil), do: {:ok, :unbound}
-
-  defp endpoint_to_datetime(%Tempo{} = tempo) do
-    with :ok <- validate_tempo_shape(tempo) do
-      tempo_to_datetime(tempo)
+  # The one span an expression is: a value is its span, and one naming
+  # several (`2026Y{6,8}M`), or a recurrence, is none.
+  defp one_span(%Tempo{} = expression) do
+    case Tempo.to_interval(expression) do
+      {:ok, interval} -> only_span(IntervalSet.members(interval), expression)
+      {:error, exception} -> {:error, unsupported(:partial_resolution, expression, exception)}
     end
   end
 
-  defp endpoint_to_datetime(other) do
-    {:error,
-     UnsupportedValueError.exception(
-       reason: :unsupported_endpoint,
-       value: other,
-       message: "interval endpoint must be a %Tempo{}, :undefined, or nil; got #{inspect(other)}"
-     )}
-  end
+  defp only_span([span], _expression), do: {:ok, span}
+  defp only_span(_several, expression), do: {:error, unsupported(:multi_valued_slot, expression)}
 
-  # `normalise_brackets/1` maps a `nil` bound to `:unbound`, so an
-  # endpoint reaching here is only ever `:unbound`, a `DateTime`, or a
-  # `NaiveDateTime` — a `nil` clause would be unreachable.
-  defp datetime_to_endpoint(:unbound, _resolution), do: {:ok, :undefined}
+  defp span_instants(span, original) do
+    case Interval.instants(span) do
+      {:ok, instants} ->
+        {:ok, instants}
 
-  defp datetime_to_endpoint(%DateTime{} = dt, resolution) do
-    {:ok, truncate_tempo(Tempo.from_date_time(dt), resolution)}
-  end
+      {:error, %Tempo.ConversionError{reason: :several}} ->
+        {:error, unsupported(:multi_valued_slot, original)}
 
-  defp datetime_to_endpoint(%NaiveDateTime{} = ndt, resolution) do
-    {:ok, truncate_tempo(Tempo.from_naive_date_time(ndt), resolution)}
-  end
-
-  defp datetime_to_endpoint(other, _resolution) do
-    {:error,
-     UnsupportedValueError.exception(
-       reason: :unsupported_endpoint,
-       value: other,
-       message: "cannot interpret range bound #{inspect(other)} as a Tempo endpoint"
-     )}
-  end
-
-  # Tempo values with no `:shift` are assumed to be UTC — the only
-  # safe default when storing a zone-aware range. When `:shift` is
-  # set, Tempo does not currently expose a direct `to_date_time/1`
-  # helper, so we build the NaiveDateTime from the token list and
-  # subtract the shift offset to land on UTC before handing it to
-  # Postgrex (which expects UTC DateTimes for tstzrange). Partial
-  # Tempo endpoints (year-only, year-month) are filled in with
-  # calendar-default zero values — this is correct because Tempo's
-  # implicit-span convention means a partial endpoint is always the
-  # *start* of its resolution's span.
-  defp tempo_to_datetime(%Tempo{shift: nil, time: time}) do
-    with {:ok, ndt} <- naive_from_tempo(time) do
-      DateTime.from_naive(ndt, "Etc/UTC")
+      {:error, exception} ->
+        {:error, unsupported(:partial_resolution, original, exception)}
     end
   end
 
-  defp tempo_to_datetime(%Tempo{shift: shift, time: time}) do
-    with {:ok, ndt} <- naive_from_tempo(time) do
-      offset_seconds = shift_to_seconds(shift)
-      utc_ndt = NaiveDateTime.add(ndt, -offset_seconds, :second)
-      DateTime.from_naive(utc_ndt, "Etc/UTC")
+  # The stretch an expression covers: its spans' first start to their last
+  # end, an open end unbound; one with no end from its first occurrence.
+  defp stretch(%Tempo{} = expression) do
+    case Tempo.to_interval(expression) do
+      {:ok, interval} -> spans_stretch(IntervalSet.members(interval), expression)
+      {:error, %Tempo.ConversionError{reason: :unbounded}} -> first_onward(expression)
+      {:error, exception} -> {:error, unsupported(:unsupported_endpoint, expression, exception)}
     end
   end
 
-  defp shift_to_seconds(shift) do
-    hours = Keyword.get(shift, :hour, 0)
-    minutes = Keyword.get(shift, :minute, 0)
-    hours * 3600 + minutes * 60
+  defp spans_stretch(spans, expression) do
+    case all_instants(spans) do
+      {:ok, pairs} ->
+        {:ok, {earliest(Enum.map(pairs, &elem(&1, 0))), latest(Enum.map(pairs, &elem(&1, 1)))}}
+
+      {:error, exception} ->
+        {:error, unsupported(:unsupported_endpoint, expression, exception)}
+    end
   end
+
+  # An expression with no end has a first occurrence only where it has a
+  # start, which `Tempo.walk/2` asks: it refuses one with an open start, a
+  # recurrence counted back from no end.
+  defp first_onward(expression) do
+    with {:ok, _walk} <- started(expression),
+         {:ok, interval} <- Tempo.to_interval(IntervalSet.first(expression)),
+         {:ok, {from, _to}} <- spans_stretch(IntervalSet.members(interval), expression) do
+      {:ok, {from, nil}}
+    end
+  end
+
+  defp started(expression) do
+    case Tempo.walk(expression, :day) do
+      {:ok, walk} -> {:ok, walk}
+      {:error, exception} -> {:error, unsupported(:unsupported_endpoint, expression, exception)}
+    end
+  end
+
+  defp all_instants(spans) do
+    Enum.reduce_while(spans, {:ok, []}, fn span, {:ok, acc} ->
+      case Interval.instants(span) do
+        {:ok, pair} -> {:cont, {:ok, [pair | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # The first of instants, or none where one of them is open.
+  defp earliest(instants) do
+    if nil in instants, do: nil, else: Enum.min_by(instants, &utc_ticks/1, fn -> nil end)
+  end
+
+  defp latest(instants) do
+    if nil in instants, do: nil, else: Enum.max_by(instants, &utc_ticks/1, fn -> nil end)
+  end
+
+  defp utc_ticks(instant) do
+    {:ok, utc} = utc(instant)
+    DateTime.to_unix(utc, :microsecond)
+  end
+
+  # An instant with no zone is stored as though at UTC; one of another
+  # calendar is stored as the Gregorian instant it is.
+  defp utc(nil), do: {:ok, :unbound}
+
+  defp utc(%NaiveDateTime{} = naive) do
+    with {:ok, iso} <- NaiveDateTime.convert(naive, Calendar.ISO),
+         do: DateTime.from_naive(iso, "Etc/UTC")
+  end
+
+  defp utc(%DateTime{} = datetime) do
+    with {:ok, iso} <- DateTime.convert(datetime, Calendar.ISO),
+         do: DateTime.shift_zone(iso, "Etc/UTC")
+  end
+
+  defp half_open(lower, upper),
+    do: %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
 
   # ------------------------------------------------------------------
   # Shape validation
   # ------------------------------------------------------------------
 
-  defp validate_interval_shape(%Tempo.Interval{recurrence: n}) when n != 1 do
-    {:error, UnsupportedValueError.exception(reason: :recurrence, value: n)}
-  end
-
-  defp validate_interval_shape(%Tempo.Interval{repeat_rule: rule}) when not is_nil(rule) do
-    {:error, UnsupportedValueError.exception(reason: :repeat_rule, value: rule)}
-  end
-
-  defp validate_interval_shape(%Tempo.Interval{from: :undefined, to: :undefined} = iv) do
-    {:error,
-     UnsupportedValueError.exception(
-       reason: :fully_unbounded,
-       value: iv,
-       message: "interval is unbounded on both sides; refusing to store a `(,)` range"
-     )}
-  end
-
-  defp validate_interval_shape(%Tempo.Interval{}), do: :ok
-
-  defp validate_tempo_shape(%Tempo{qualification: q}) when not is_nil(q) do
-    {:error, UnsupportedValueError.exception(reason: :qualification, value: q)}
-  end
-
-  defp validate_tempo_shape(%Tempo{qualifications: qs}) when not is_nil(qs) and qs != [] do
-    {:error, UnsupportedValueError.exception(reason: :qualification, value: qs)}
-  end
-
-  defp validate_tempo_shape(%Tempo{calendar: calendar})
-       when calendar not in @gregorian_calendars do
-    {:error, UnsupportedValueError.exception(reason: :non_gregorian_calendar, value: calendar)}
-  end
-
-  defp validate_tempo_shape(%Tempo{time: time} = tempo) do
+  # A plain range holds instants and nothing else: a qualification or a
+  # calendar of its own would be lost.
+  defp plain(%Tempo{calendar: calendar} = interval) do
     cond do
-      not has_year_month_day?(time) ->
-        {:error, UnsupportedValueError.exception(reason: :partial_resolution, value: tempo)}
+      qualified?(interval) ->
+        {:error, UnsupportedValueError.exception(reason: :qualification, value: interval)}
 
-      has_multi_valued_slot?(time) ->
-        {:error, UnsupportedValueError.exception(reason: :multi_valued_slot, value: tempo)}
+      calendar not in @gregorian_calendars ->
+        {:error,
+         UnsupportedValueError.exception(reason: :non_gregorian_calendar, value: calendar)}
 
       true ->
         :ok
     end
   end
 
-  # Tempo endpoints from `to_interval/1` may carry a span-resolution
-  # token list — e.g. a year-only `%Tempo{time: [year: 2026]}`
-  # materialises to an Interval whose endpoints are
-  # `[year: 2026]` and `[year: 2027]`. Both represent the start of
-  # their respective spans (half-open `[from, to)`), so we require
-  # at minimum year/month (accepting year-only by filling calendar
-  # defaults) and fill hour/minute/second with zeros.
-  defp has_year_month_day?(time) do
-    Keyword.has_key?(time, :year)
+  defp qualified?(%Tempo{} = span) do
+    {from, to} = Interval.endpoints(span)
+
+    Tempo.qualification(span) != nil or
+      Enum.any?([from, to], &(match?(%Tempo{}, &1) and Tempo.qualification(&1) != nil))
   end
 
-  defp has_multi_valued_slot?(time) do
-    Enum.any?(time, fn
-      {_, value} when is_integer(value) -> false
-      {_, _} -> true
-    end)
+  defp bounded_somewhere(interval, nil, nil) do
+    {:error,
+     UnsupportedValueError.exception(
+       reason: :fully_unbounded,
+       value: interval,
+       message: "interval is unbounded on both sides; refusing to store a `(,)` range"
+     )}
   end
 
-  defp naive_from_tempo(time) do
-    year = Keyword.fetch!(time, :year)
-    month = Keyword.get(time, :month, 1)
-    day = Keyword.get(time, :day, 1)
-    hour = Keyword.get(time, :hour, 0)
-    minute = Keyword.get(time, :minute, 0)
-    second = Keyword.get(time, :second, 0)
+  defp bounded_somewhere(_interval, _from, _to), do: :ok
 
-    # Ordinal date (`year + day`) and week date (`year + week + day_of_week`)
-    # require calendar conversion — reject them here; callers must
-    # materialise them via `Tempo.to_date/1` first.
-    if Keyword.has_key?(time, :week) or
-         (Keyword.has_key?(time, :day) and not Keyword.has_key?(time, :month)) do
-      {:error,
-       UnsupportedValueError.exception(
-         reason: :partial_resolution,
-         value: time,
-         message:
-           "ordinal or week-date Tempo endpoints must be materialised to a calendar date before storage"
-       )}
-    else
-      NaiveDateTime.new(year, month, day, hour, minute, second, {0, 0})
-    end
+  defp unsupported(reason, value, cause \\ nil) do
+    message = if cause, do: Exception.message(cause)
+    UnsupportedValueError.exception(reason: reason, value: value, message: message)
+  end
+
+  # ------------------------------------------------------------------
+  # Range bounds → interval ends
+  # ------------------------------------------------------------------
+
+  defp shift_lower_to_inclusive(bound, _inclusive) when bound in [:unbound, nil], do: :unbound
+  defp shift_lower_to_inclusive(value, true), do: value
+  defp shift_lower_to_inclusive(%DateTime{} = dt, false), do: DateTime.add(dt, 1, :second)
+
+  defp shift_lower_to_inclusive(%NaiveDateTime{} = ndt, false),
+    do: NaiveDateTime.add(ndt, 1, :second)
+
+  defp shift_upper_to_exclusive(bound, _inclusive) when bound in [:unbound, nil], do: :unbound
+  defp shift_upper_to_exclusive(value, false), do: value
+  defp shift_upper_to_exclusive(%DateTime{} = dt, true), do: DateTime.add(dt, 1, :second)
+
+  defp shift_upper_to_exclusive(%NaiveDateTime{} = ndt, true),
+    do: NaiveDateTime.add(ndt, 1, :second)
+
+  # The value a lower bound begins, truncated to the resolution.
+  defp lower_end(:unbound, _resolution), do: {:ok, :open}
+
+  defp lower_end(bound, resolution) do
+    with {:ok, value} <- bound_value(bound), do: Tempo.trunc(value, resolution)
+  end
+
+  # The end an upper bound makes: at a clock resolution the bound itself,
+  # where the interval ends; at a date resolution the last date before it,
+  # which the interval runs through.
+  defp upper_end(:unbound, _resolution), do: {:ok, :open}
+
+  defp upper_end(bound, resolution) when resolution in @clock_resolutions do
+    with {:ok, value} <- bound_value(bound), do: Tempo.trunc(value, resolution)
+  end
+
+  defp upper_end(bound, resolution) do
+    with {:ok, value} <- bound_value(bound),
+         {:ok, truncated} <- Tempo.trunc(value, resolution),
+         do: Tempo.shift(truncated, [{resolution, -1}])
+  end
+
+  # A bound of whole seconds is read as a second, one with a fraction keeps it.
+  defp bound_value(%{microsecond: {0, _precision}} = instant)
+       when is_struct(instant, DateTime) or is_struct(instant, NaiveDateTime),
+       do: Tempo.from_elixir(%{instant | microsecond: {0, 0}})
+
+  defp bound_value(%DateTime{} = datetime), do: Tempo.from_elixir(datetime)
+  defp bound_value(%NaiveDateTime{} = naive), do: Tempo.from_elixir(naive)
+
+  defp bound_value(other) do
+    {:error,
+     UnsupportedValueError.exception(
+       reason: :unsupported_endpoint,
+       value: other,
+       message: "cannot interpret range bound #{inspect(other)} as a Tempo endpoint"
+     )}
   end
 end

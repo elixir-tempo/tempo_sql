@@ -1,9 +1,11 @@
 if Code.ensure_loaded?(Ecto.Type) do
   defmodule Tempo.Ecto.IntervalSet do
     @moduledoc """
-    Ecto.ParameterizedType for persisting a
-    `t:Tempo.IntervalSet.t/0` as a PostgreSQL `tstzmultirange`
-    value (PostgreSQL 14+).
+    Ecto.ParameterizedType for persisting the intervals an expression
+    covers as a PostgreSQL `tstzmultirange` value (PostgreSQL 14+).
+
+    It takes any expression with a last span — a set, a bounded
+    recurrence, a value naming several — and loads a set of intervals.
 
     ## Usage
 
@@ -32,8 +34,8 @@ if Code.ensure_loaded?(Ecto.Type) do
         round-trips as `'{}'::tstzmultirange`; use a NULL column
         to represent "no set".
 
-      * Every member must be bounded on both ends (Tempo's
-        `IntervalSet.new/2` already enforces this).
+      * The expression must have a last span: a recurrence with no
+        end has no multirange.
 
     """
 
@@ -91,7 +93,13 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def cast(nil, _params), do: {:ok, nil}
-    def cast(%Tempo.IntervalSet{} = set, _params), do: {:ok, set}
+
+    def cast(%Tempo{} = expression, _params) do
+      case Conversion.intervals(expression) do
+        {:ok, _intervals} -> {:ok, expression}
+        {:error, _} -> :error
+      end
+    end
 
     def cast(%Postgrex.Multirange{} = multirange, params) do
       case multirange_to_set(multirange, params.resolution) do
@@ -100,8 +108,8 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def cast(intervals, _params) when is_list(intervals) do
-      case IntervalSet.new(intervals) do
+    def cast(members, _params) when is_list(members) do
+      case IntervalSet.new(members) do
         {:ok, set} -> {:ok, set}
         {:error, _} -> :error
       end
@@ -111,7 +119,6 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-
     def load(nil, _loader, _params), do: {:ok, nil}
 
     def load(%Postgrex.Multirange{} = multirange, _loader, params) do
@@ -125,14 +132,12 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-
     def dump(nil, _, _), do: {:ok, nil}
-    def dump(%Tempo.IntervalSet{intervals: []}, _, _), do: :error
 
-    def dump(%Tempo.IntervalSet{intervals: intervals}, _, _) do
-      case dump_members(intervals, []) do
-        {:ok, ranges} -> {:ok, %Postgrex.Multirange{ranges: ranges}}
-        :error -> :error
+    def dump(%Tempo{} = expression, _, _) do
+      case Conversion.intervals(expression) do
+        {:ok, [_ | _] = intervals} -> dump_members(intervals, [])
+        _empty_or_error -> :error
       end
     end
 
@@ -144,7 +149,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     @impl Ecto.ParameterizedType
     def embed_as(_format, _params), do: :self
 
-    defp dump_members([], acc), do: {:ok, Enum.reverse(acc)}
+    defp dump_members([], acc), do: {:ok, %Postgrex.Multirange{ranges: Enum.reverse(acc)}}
 
     defp dump_members([interval | rest], acc) do
       case Conversion.interval_to_range(interval) do
@@ -154,18 +159,17 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     defp multirange_to_set(%Postgrex.Multirange{ranges: ranges}, resolution) do
-      with {:ok, intervals} <- load_members(ranges, resolution, []) do
-        IntervalSet.new(intervals)
-      end
+      ranges
+      |> Enum.reduce_while({:ok, []}, fn range, {:ok, acc} ->
+        case Conversion.range_to_interval(range, resolution: resolution) do
+          {:ok, interval} -> {:cont, {:ok, [interval | acc]}}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+      |> in_order()
     end
 
-    defp load_members([], _resolution, acc), do: {:ok, Enum.reverse(acc)}
-
-    defp load_members([range | rest], resolution, acc) do
-      case Conversion.range_to_interval(range, resolution: resolution) do
-        {:ok, interval} -> load_members(rest, resolution, [interval | acc])
-        {:error, _} = err -> err
-      end
-    end
+    defp in_order({:ok, intervals}), do: IntervalSet.new(Enum.reverse(intervals))
+    defp in_order(error), do: error
   end
 end

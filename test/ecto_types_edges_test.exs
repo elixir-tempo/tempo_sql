@@ -18,12 +18,8 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
 
   @second %{resolution: :second}
 
-  defp interval(from, to) do
-    Tempo.Interval.new!(from: Tempo.from_iso8601!(from), to: Tempo.from_iso8601!(to))
-  end
-
-  defp morning, do: interval("2027-06-15T09:00:00", "2027-06-15T10:00:00")
-  defp afternoon, do: interval("2027-06-15T14:00:00", "2027-06-15T15:00:00")
+  defp morning, do: ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
+  defp afternoon, do: ~o"2027-06-15T14:00:00/2027-06-15T15:00:00"
 
   defp range do
     {:ok, range} = IntervalType.dump(morning(), nil, @second)
@@ -39,58 +35,56 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
 
   describe "casting the shapes Postgrex hands back" do
     test "a range casts to the interval it represents" do
-      assert {:ok, %Tempo.Interval{} = cast} = IntervalType.cast(range(), @second)
-      assert Tempo.hour(cast.from) == 9
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} =
+               IntervalType.cast(range(), @second)
     end
 
     test "the bare-Tempo type casts a range too, by delegating" do
-      assert {:ok, %Tempo.Interval{}} = TempoType.cast(range(), @second)
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} =
+               TempoType.cast(range(), @second)
     end
 
     test "a multirange casts to the set it represents" do
-      assert {:ok, %Tempo.IntervalSet{} = set} = IntervalSetType.cast(multirange(), @second)
+      assert {:ok, set} = IntervalSetType.cast(multirange(), @second)
       assert Tempo.IntervalSet.count(set) == 2
     end
 
     test "a declared resolution is applied while casting a range" do
-      # The span must survive truncation: a one-hour range truncated to
-      # days would collapse to zero extent, which is not an interval.
-      {:ok, week} = IntervalType.dump(interval("2027-06-15", "2027-06-22"), nil, @second)
+      # The span must survive truncation: a one-hour range written to the
+      # day would end before it began, which is no interval.
+      {:ok, week} = IntervalType.dump(~o"2027-06-15/2027-06-21", nil, @second)
 
-      assert {:ok, cast} = IntervalType.cast(week, %{resolution: :day})
-      assert Keyword.keys(cast.from.time) == [:year, :month, :day]
+      assert {:ok, ~o"2027Y6M15DZ/2027Y6M21DZ"} = IntervalType.cast(week, %{resolution: :day})
     end
   end
 
   describe "a list of intervals is accepted as a set" do
     test "the set types cast a plain list" do
       for type <- [IntervalSetType, TempoMultirange] do
-        assert {:ok, %Tempo.IntervalSet{} = set} =
-                 type.cast([morning(), afternoon()], @second)
-
-        assert Tempo.IntervalSet.count(set) == 2
+        assert {:ok, set} = type.cast([morning(), afternoon()], @second)
+        assert Tempo.IntervalSet.members(set) == [morning(), afternoon()]
       end
     end
 
     test "a list that is not intervals at all is refused" do
-      # Needs ex_tempo 1.1.1: before that, `IntervalSet.new/1` raised a
-      # FunctionClauseError here instead of returning `{:error, _}`, so
-      # a bad list from a changeset crashed rather than failing to cast.
+      # A bad list from a changeset fails to cast rather than crashing.
       for type <- [IntervalSetType, TempoMultirange] do
         assert type.cast([:not, :intervals], @second) == :error
         assert type.cast(["09:00", "10:00"], @second) == :error
       end
     end
 
-    test "a list holding a member no set can contain is refused" do
-      # An open-ended interval has no upper endpoint, so it cannot be a
-      # member of a set — `IntervalSet.new/1` says so and the cast
-      # turns that into Ecto's `:error`.
-      {:ok, open} = Tempo.Interval.new(from: Tempo.from_iso8601!("2027-06-15"), to: :undefined)
+    test "a list holding an open-ended member is a set with an unbounded member" do
+      assert {:ok, set} = IntervalSetType.cast([~o"2027-06-15/.."], @second)
 
-      for type <- [IntervalSetType, TempoMultirange] do
-        assert type.cast([open], @second) == :error
-      end
+      assert {:ok, %Postgrex.Multirange{ranges: [range]}} =
+               IntervalSetType.dump(set, nil, @second)
+
+      assert {range.lower, range.upper} == {~U[2027-06-15 00:00:00Z], :unbound}
+    end
+
+    test "a recurrence with no end is refused by the plain set type" do
+      assert IntervalSetType.cast(~o"R/2027-06-15/P1D", @second) == :error
     end
   end
 
@@ -99,7 +93,7 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
       # `'{}'::tstzmultirange` and NULL would both read back as "no
       # busy times"; the column is expected to be NULL for that, so an
       # empty set is refused rather than silently conflated.
-      empty = %Tempo.IntervalSet{intervals: []}
+      empty = Tempo.IntervalSet.new!([])
 
       assert IntervalSetType.dump(empty, nil, @second) == :error
       assert TempoMultirange.dump(empty, nil, @second) == :error
@@ -108,34 +102,31 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
 
   describe "the composite falls back when a row carries no metadata" do
     test "a multirange composite decodes from its ranges alone" do
-      assert {:ok, %Tempo.IntervalSet{} = set} =
-               TempoMultirange.load({multirange(), "second", nil}, nil, @second)
+      assert {:ok, set} = TempoMultirange.load({multirange(), "second", nil}, nil, @second)
 
-      assert Tempo.IntervalSet.count(set) == 2
+      assert Tempo.IntervalSet.members(set) == [
+               ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z",
+               ~o"2027-06-15T14:00:00Z/2027-06-15T15:00:00Z"
+             ]
     end
 
     test "the fallback honours the declared resolution" do
-      # Day-resolution members must span whole days to survive
-      # truncation, so this set is two separate weeks.
-      {:ok, weeks} =
-        IntervalSetType.dump(
-          Tempo.IntervalSet.new!([
-            interval("2027-06-01", "2027-06-08"),
-            interval("2027-07-01", "2027-07-08")
-          ]),
-          nil,
-          @second
-        )
+      # Day-resolution members must span whole days, so this set is two
+      # separate weeks.
+      weeks = Tempo.IntervalSet.new!([~o"2027-06-01/2027-06-07", ~o"2027-07-01/2027-07-07"])
+      {:ok, multirange} = IntervalSetType.dump(weeks, nil, @second)
 
-      assert {:ok, set} = TempoMultirange.load({weeks, "day", nil}, nil, %{resolution: :day})
+      assert {:ok, set} = TempoMultirange.load({multirange, "day", nil}, nil, %{resolution: :day})
 
-      [first | _] = Tempo.IntervalSet.to_list(set)
-      assert Keyword.keys(first.from.time) == [:year, :month, :day]
+      assert Tempo.IntervalSet.members(set) == [
+               ~o"2027Y6M1DZ/2027Y6M7DZ",
+               ~o"2027Y7M1DZ/2027Y7M7DZ"
+             ]
     end
 
     test "metadata that is not a set document is refused" do
-      assert {:error, _} =
-               TempoMultirange.load({multirange(), "second", ~s({"not":"a set"})}, nil, @second)
+      assert TempoMultirange.load({multirange(), "second", ~s({"not":"a set"})}, nil, @second) ==
+               :error
     end
   end
 
@@ -145,16 +136,15 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     end
 
     test "loads a range back as an interval" do
-      assert {:ok, %Tempo.Interval{}} = TempoType.load(range(), nil, @second)
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} =
+               TempoType.load(range(), nil, @second)
     end
 
-    test "refuses a Tempo that materialises to a set" do
-      # `{2027,2029}Y` is two disjoint years — an interval set, which a
-      # single `tstzrange` column cannot hold.
-      {:ok, disjoint} = Tempo.from_iso8601("{2027,2029}Y")
-
-      assert TempoType.cast(disjoint, @second) == :error
-      assert TempoType.dump(disjoint, nil, @second) == :error
+    test "refuses an expression of several spans" do
+      # `{2027,2029}Y` is two disjoint years, which a single `tstzrange`
+      # column cannot hold.
+      assert TempoType.cast(~o"{2027,2029}Y", @second) == :error
+      assert TempoType.dump(~o"{2027,2029}Y", nil, @second) == :error
     end
 
     test "builds a parameterized type usable in a schema" do
@@ -177,13 +167,13 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     test "it comes back rendering as it went in" do
       # This is the fidelity the composite type exists for, and the
       # case the plain-range types refuse outright.
-      {:ok, recurring} = Tempo.from_iso8601("R5/2027-06-15/P1M")
+      recurring = ~o"R5/2027-06-15/P1M"
 
       {:ok, dumped} = TempoRange.dump(recurring, nil, @second)
       {:ok, loaded} = TempoRange.load(dumped, nil, @second)
 
-      assert Tempo.to_iso8601(loaded) == Tempo.to_iso8601(recurring)
-      assert loaded.recurrence == 5
+      assert loaded == recurring
+      assert Tempo.IntervalSet.count(loaded) == 5
     end
   end
 

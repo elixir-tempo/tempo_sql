@@ -12,11 +12,12 @@ if Code.ensure_loaded?(Ecto.Type) do
           meta       jsonb
         );
 
-    Use this type when you care about round-trip fidelity — the
-    stored value round-trips as the same `%Tempo.Interval{}`
-    including qualifications, non-Gregorian calendars,
-    recurrence rules, zone identifiers, and the
-    implicit-vs-explicit-span distinction.
+    Use this type when you care about round-trip fidelity: any
+    expression with ISO 8601 text — a value, an interval, a
+    recurrence, a set — round-trips as the same expression, including
+    qualifications, calendars other than the Gregorian, recurrence
+    rules, zone identifiers and the value-versus-interval distinction.
+    The range column holds the stretch it covers, for queries.
 
     ## Setup
 
@@ -46,8 +47,9 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     Round-trip preserves:
 
-      * Token-list resolution (`~o"2026Y"` round-trips as
-        `~o"2026Y"`, not a materialised interval).
+      * The resolution a value is written to (`~o"2026Y"`
+        round-trips as `~o"2026Y"`, not as an interval between two
+        instants).
 
       * Qualifications (`:uncertain`, `:approximate`).
 
@@ -58,8 +60,8 @@ if Code.ensure_loaded?(Ecto.Type) do
       * Zone identifiers (IANA names preserved via the meta
         column, not just the UTC offset).
 
-      * `Tempo.Interval.metadata`, provided it is
-        JSON-serialisable.
+      * The expression's metadata, and a set's members', provided
+        each is JSON-serialisable.
 
     """
 
@@ -117,13 +119,11 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def cast(nil, _params), do: {:ok, nil}
-    def cast(%Tempo.Interval{} = interval, _params), do: {:ok, interval}
 
-    def cast(%Tempo{} = tempo, _params) do
-      case Tempo.to_interval(tempo) do
-        {:ok, %Tempo.Interval{} = interval} -> {:ok, interval}
-        {:ok, %Tempo.IntervalSet{}} -> :error
-        _ -> :error
+    def cast(%Tempo{} = expression, _params) do
+      case Tempo.to_iso8601(expression) do
+        {:ok, _text} -> {:ok, expression}
+        {:error, _} -> :error
       end
     end
 
@@ -131,50 +131,40 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-
     def load(nil, _loader, _params), do: {:ok, nil}
 
-    # Postgrex decodes a composite type as a tuple:
-    # {range, resolution_string, meta_json_or_map}
     def load({%Postgrex.Range{} = _range, _resolution, meta}, _loader, _params)
-        when not is_nil(meta) do
-      Meta.decode_interval(meta)
-    end
+        when not is_nil(meta),
+        do: loaded(Meta.decode_interval(meta))
 
-    def load({%Postgrex.Range{} = range, _resolution, nil}, _loader, params) do
-      # Composite row missing the meta column — fall back to the plain
-      # range decoding. This happens for hand-crafted inserts that
-      # didn't populate meta.
-      Conversion.range_to_interval(range, resolution: params.resolution)
-    end
+    # A composite row with no meta, written by hand, is read from its range.
+    def load({%Postgrex.Range{} = range, _resolution, nil}, _loader, params),
+      do: loaded(Conversion.range_to_interval(range, resolution: params.resolution))
 
     def load(_, _, _), do: :error
 
+    # Ecto takes a value that does not load as `:error`, whatever the reason.
+    defp loaded({:ok, expression}), do: {:ok, expression}
+    defp loaded({:error, _reason}), do: :error
+
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-
     def dump(nil, _, _), do: {:ok, nil}
 
-    def dump(%Tempo.Interval{} = interval, _, params) do
-      case Conversion.interval_to_queryable_range(interval) do
-        {:ok, range} ->
-          meta_json = interval |> Meta.encode_interval() |> IO.iodata_to_binary()
-          resolution_text = Atom.to_string(params.resolution)
-          {:ok, {range, resolution_text, meta_json}}
-
-        _ ->
-          :error
-      end
-    end
-
-    def dump(%Tempo{} = tempo, dumper, params) do
-      case cast(tempo, params) do
-        {:ok, interval} -> dump(interval, dumper, params)
-        :error -> :error
+    def dump(%Tempo{} = expression, _, params) do
+      case composite(expression) do
+        {:ok, {range, meta}} -> {:ok, {range, Atom.to_string(params.resolution), meta}}
+        {:error, _} -> :error
       end
     end
 
     def dump(_, _, _), do: :error
+
+    defp composite(expression) do
+      with {:ok, range} <- Conversion.interval_to_queryable_range(expression),
+           {:ok, meta} <- Meta.encode_interval(expression),
+           do: {:ok, {range, IO.iodata_to_binary(meta)}}
+    end
 
     @impl Ecto.ParameterizedType
     def equal?(a, b, _params), do: a == b

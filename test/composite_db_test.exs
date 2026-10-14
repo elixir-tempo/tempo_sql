@@ -2,64 +2,74 @@ defmodule Tempo.SQL.CompositeDBTest do
   use Tempo.SQL.Test.RepoCase
 
   import Tempo.Ecto.QueryAPI.Composite
+  import Tempo.Sigils
 
-  alias Tempo.Interval
   alias Tempo.IntervalSet
 
+  defp stored(schema, field, value, name_field, name) do
+    row = Repo.insert!(struct(schema, [{name_field, name}, {field, value}]))
+    schema |> Repo.get!(row.id) |> Map.fetch!(field)
+  end
+
   describe "Tempo.Ecto.TempoRange end-to-end" do
-    test "inserts and reads back a second-resolution interval" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T10:00:00")
-      {:ok, window} = Interval.new(from: from, to: to)
+    test "reads back an interval exactly as it went in" do
+      window = ~o"2026-06-15T09:00:00/2026-06-15T10:00:00"
 
-      row = Repo.insert!(%FidelityMeeting{name: "Standup", window: window})
-      fetched = Repo.get!(FidelityMeeting, row.id)
-
-      assert %Tempo.Interval{} = fetched.window
-      assert Keyword.get(fetched.window.from.time, :hour) == 9
-      assert Keyword.get(fetched.window.to.time, :hour) == 10
+      assert stored(FidelityMeeting, :window, window, :name, "Standup") == window
     end
 
-    test "round-trips an interval's endpoints at the shape they went in with" do
-      # This is the headline feature — whatever Tempo endpoints you
-      # hand the composite, you get back byte-for-byte via the meta
-      # column. The plain-range Tempo.Ecto.Tempo type materialises
-      # everything to second resolution; the composite preserves it.
-      {:ok, original} = Tempo.from_iso8601!("2026-06") |> Tempo.to_interval()
-
-      row = Repo.insert!(%FidelityMeeting{name: "June", window: original})
-      fetched = Repo.get!(FidelityMeeting, row.id)
-
-      assert fetched.window.from.time == original.from.time
-      assert fetched.window.to.time == original.to.time
+    test "reads back a value at the resolution it was written to" do
+      # The plain-range types read a range back at the column's
+      # resolution; the composite keeps the expression's own.
+      assert stored(FidelityMeeting, :window, ~o"2026-06", :name, "June") == ~o"2026-06"
     end
 
-    test "round-trips qualifications" do
-      {:ok, interval} = Tempo.from_iso8601("1984?/2004~")
+    test "reads back qualifications" do
+      history = ~o"1984?/2004~"
 
-      row = Repo.insert!(%FidelityMeeting{name: "Uncertain history", window: interval})
-      fetched = Repo.get!(FidelityMeeting, row.id)
-
-      assert fetched.window.from.qualification == :uncertain
-      assert fetched.window.to.qualification == :approximate
+      assert stored(FidelityMeeting, :window, history, :name, "Uncertain history") == history
     end
 
-    test "round-trips a recurrence rule" do
-      {:ok, interval} = Tempo.from_iso8601("R5/2022-01-01/P1M")
+    test "reads back a recurrence" do
+      series = ~o"R5/2022-01-01/P1M"
 
-      row = Repo.insert!(%FidelityMeeting{name: "Five-month series", window: interval})
-      fetched = Repo.get!(FidelityMeeting, row.id)
+      assert stored(FidelityMeeting, :window, series, :name, "Five-month series") == series
+    end
 
-      assert fetched.window.recurrence == 5
-      assert %Tempo.Duration{} = fetched.window.duration
+    test "reads back a recurrence with no end, and finds it by its first occurrence" do
+      monthly = ~o"R/2022-01-01/P1M"
+
+      assert stored(FidelityMeeting, :window, monthly, :name, "Monthly") == monthly
+
+      probe = %Postgrex.Range{
+        lower: ~U[2030-06-01 00:00:00Z],
+        upper: ~U[2030-06-02 00:00:00Z],
+        lower_inclusive: true,
+        upper_inclusive: false
+      }
+
+      assert Repo.all(
+               from(m in FidelityMeeting, where: overlaps(m.window, ^probe), select: m.name)
+             ) ==
+               ["Monthly"]
+    end
+
+    test "reads back an expression of another calendar" do
+      hebrew = ~o"5786-01-01/5786-01-10[u-ca=hebrew]"
+
+      assert stored(FidelityMeeting, :window, hebrew, :name, "Nisan") == hebrew
     end
 
     test "queries with composite `contains` — the range column stays queryable" do
-      a = interval_between("2026-06-15T09:00:00", "2026-06-15T10:00:00")
-      b = interval_between("2026-06-15T14:00:00", "2026-06-15T15:00:00")
+      Repo.insert!(%FidelityMeeting{
+        name: "Morning",
+        window: ~o"2026-06-15T09:00:00/2026-06-15T10:00:00"
+      })
 
-      Repo.insert!(%FidelityMeeting{name: "Morning", window: a})
-      Repo.insert!(%FidelityMeeting{name: "Afternoon", window: b})
+      Repo.insert!(%FidelityMeeting{
+        name: "Afternoon",
+        window: ~o"2026-06-15T14:00:00/2026-06-15T15:00:00"
+      })
 
       instant_at_930 = %Postgrex.Range{
         lower: ~U[2026-06-15 09:30:00Z],
@@ -81,37 +91,35 @@ defmodule Tempo.SQL.CompositeDBTest do
   end
 
   describe "Tempo.Ecto.TempoMultirange end-to-end" do
-    test "round-trips a set of anchored intervals" do
-      a = interval_between("2026-06-15T09:00:00", "2026-06-15T10:00:00")
-      b = interval_between("2026-06-15T14:00:00", "2026-06-15T15:00:00")
-      {:ok, busy} = IntervalSet.new([a, b])
+    test "reads back a set of anchored intervals" do
+      busy =
+        IntervalSet.new!([
+          ~o"2026-06-15T09:00:00/2026-06-15T10:00:00",
+          ~o"2026-06-15T14:00:00/2026-06-15T15:00:00"
+        ])
 
-      row = Repo.insert!(%FidelityCalendar{owner: "alice", busy_times: busy})
-      fetched = Repo.get!(FidelityCalendar, row.id)
-
-      assert length(fetched.busy_times.intervals) == 2
-      assert Enum.at(fetched.busy_times.intervals, 0).from.time |> Keyword.get(:hour) == 9
-      assert Enum.at(fetched.busy_times.intervals, 1).from.time |> Keyword.get(:hour) == 14
+      assert stored(FidelityCalendar, :busy_times, busy, :owner, "alice") == busy
     end
 
-    test "round-trips a set whose members have qualifications" do
-      {:ok, uncertain_a} = Tempo.from_iso8601("1984?/1985")
-      {:ok, uncertain_b} = Tempo.from_iso8601("1990/1991~")
-      {:ok, set} = IntervalSet.new([uncertain_a, uncertain_b])
+    test "reads back a set whose members have qualifications" do
+      set = IntervalSet.new!([~o"1984?/1985", ~o"1990/1991~"])
 
-      row = Repo.insert!(%FidelityCalendar{owner: "archivist", busy_times: set})
-      fetched = Repo.get!(FidelityCalendar, row.id)
-
-      [a, b] = fetched.busy_times.intervals
-      assert a.from.qualification == :uncertain
-      assert b.to.qualification == :approximate
+      assert stored(FidelityCalendar, :busy_times, set, :owner, "archivist") == set
     end
-  end
 
-  defp interval_between(from_str, to_str) do
-    from = Tempo.from_iso8601!(from_str)
-    to = Tempo.from_iso8601!(to_str)
-    {:ok, iv} = Interval.new(from: from, to: to)
-    iv
+    test "reads back each member's metadata" do
+      set =
+        IntervalSet.new!([
+          Tempo.put_metadata(~o"2026-06-15T09:00:00/2026-06-15T10:00:00", %{"title" => "standup"}),
+          Tempo.put_metadata(~o"2026-06-15T14:00:00/2026-06-15T15:00:00", %{"title" => "review"})
+        ])
+
+      fetched = stored(FidelityCalendar, :busy_times, set, :owner, "team")
+
+      assert Enum.map(IntervalSet.members(fetched), &Tempo.metadata/1) == [
+               %{"title" => "standup"},
+               %{"title" => "review"}
+             ]
+    end
   end
 end

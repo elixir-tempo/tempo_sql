@@ -1,10 +1,16 @@
 defmodule Tempo.Ecto.TempoTest do
   use ExUnit.Case, async: true
 
+  import Tempo.Sigils
+
   alias Tempo.Ecto.Tempo, as: EctoTempo
-  alias Tempo.Interval
 
   @default_params %{resolution: :second}
+
+  defp stored(expression) do
+    {:ok, range} = EctoTempo.dump(expression, nil, @default_params)
+    {range.lower, range.upper}
+  end
 
   describe "type/1" do
     test "reports tstzrange" do
@@ -12,63 +18,51 @@ defmodule Tempo.Ecto.TempoTest do
     end
   end
 
-  describe "dump/3 — implicit-span materialisation" do
-    test "materialises a year-only Tempo to its annual span" do
-      year = Tempo.from_iso8601!("2026")
-
-      assert {:ok, %Postgrex.Range{} = range} = EctoTempo.dump(year, nil, @default_params)
-      assert range.lower == ~U[2026-01-01 00:00:00Z]
-      assert range.upper == ~U[2027-01-01 00:00:00Z]
+  describe "dump/3 — a value is the span it denotes" do
+    test "a year is its year" do
+      assert stored(~o"2026") == {~U[2026-01-01 00:00:00Z], ~U[2027-01-01 00:00:00Z]}
     end
 
-    test "materialises a year-month Tempo to its monthly span" do
-      month = Tempo.from_iso8601!("2026-06")
-
-      assert {:ok, %Postgrex.Range{} = range} = EctoTempo.dump(month, nil, @default_params)
-      assert range.lower == ~U[2026-06-01 00:00:00Z]
-      assert range.upper == ~U[2026-07-01 00:00:00Z]
+    test "a month is its month" do
+      assert stored(~o"2026-06") == {~U[2026-06-01 00:00:00Z], ~U[2026-07-01 00:00:00Z]}
     end
 
-    test "materialises a day-resolution Tempo to a 24-hour span" do
-      day = Tempo.from_iso8601!("2026-06-15")
-
-      assert {:ok, %Postgrex.Range{} = range} = EctoTempo.dump(day, nil, @default_params)
-      assert range.lower == ~U[2026-06-15 00:00:00Z]
-      assert range.upper == ~U[2026-06-16 00:00:00Z]
+    test "a day is its 24 hours" do
+      assert stored(~o"2026-06-15") == {~U[2026-06-15 00:00:00Z], ~U[2026-06-16 00:00:00Z]}
     end
 
-    test "passes through a fully-anchored Interval" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T17:00:00")
-      {:ok, interval} = Interval.new(from: from, to: to)
-
-      assert {:ok, %Postgrex.Range{}} = EctoTempo.dump(interval, nil, @default_params)
+    test "an interval is stored as it is" do
+      assert stored(~o"2026-06-15T09:00:00/2026-06-15T17:00:00") ==
+               {~U[2026-06-15 09:00:00Z], ~U[2026-06-15 17:00:00Z]}
     end
   end
 
-  describe "load/3 — :resolution recovers implicit-span shape" do
-    test "resolution: :year on a one-year range loads as a year-resolution interval" do
+  describe "load/3 — :resolution recovers the value's resolution" do
+    test "a year stored at :year loads as the year through the year" do
       params = EctoTempo.init(resolution: :year)
 
-      year = Tempo.from_iso8601!("2026")
-      {:ok, range} = EctoTempo.dump(year, nil, params)
-      {:ok, interval} = EctoTempo.load(range, nil, params)
+      {:ok, range} = EctoTempo.dump(~o"2026", nil, params)
 
-      # Closest thing to a round-trip of `~o"2026Y"` that tstzrange allows.
-      assert interval.from.time == [year: 2026]
-      assert interval.to.time == [year: 2027]
+      # The closest a tstzrange comes to a round-trip of `~o"2026"`.
+      assert {:ok, ~o"2026YZ/2026YZ"} = EctoTempo.load(range, nil, params)
     end
   end
 
   describe "cast/2" do
-    test "materialises an implicit span" do
-      tempo = Tempo.from_iso8601!("2026-06")
-      assert {:ok, %Tempo.Interval{}} = EctoTempo.cast(tempo, @default_params)
+    test "makes a value the interval it denotes" do
+      assert {:ok, ~o"2026-06/2026-06"} = EctoTempo.cast(~o"2026-06", @default_params)
     end
 
     test "accepts a Postgrex.Range" do
-      range = %Postgrex.Range{lower: ~U[2026-01-01 00:00:00Z], upper: ~U[2027-01-01 00:00:00Z]}
-      assert {:ok, %Tempo.Interval{}} = EctoTempo.cast(range, @default_params)
+      range = %Postgrex.Range{
+        lower: ~U[2026-01-01 00:00:00Z],
+        upper: ~U[2027-01-01 00:00:00Z],
+        lower_inclusive: true,
+        upper_inclusive: false
+      }
+
+      assert {:ok, ~o"2026-01-01T00:00:00Z/2027-01-01T00:00:00Z"} =
+               EctoTempo.cast(range, @default_params)
     end
   end
 end

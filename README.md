@@ -13,8 +13,8 @@ Add `ex_tempo_sql` to your deps:
 ```elixir
 def deps do
   [
-    {:ex_tempo, "~> 1.1"},
-    {:ex_tempo_sql, "~> 0.1"},
+    {:ex_tempo, "~> 2.0"},
+    {:ex_tempo_sql, "~> 0.3"},
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.19"}
   ]
@@ -23,7 +23,7 @@ end
 
 Requires PostgreSQL 14 or later for `tstzmultirange`. `tstzrange` alone works on PostgreSQL 9.2+.
 
-Requires **Erlang/OTP 27 or later**, inherited from `ex_tempo` — OTP 26 miscompiles Tempo's ISO 8601 tokenizer, so it refuses to build there. Elixir 1.17 and later are supported.
+Requires **Erlang/OTP 27 or later**, inherited from `ex_tempo`. Elixir 1.17 and later are supported.
 
 ## Quick start
 
@@ -61,67 +61,55 @@ end
 ### 3. Insert and query
 
 ```elixir
-window = Tempo.Interval.new!(
-  from: Tempo.from_iso8601!("2026-06-15T09:00:00"),
-  to:   Tempo.from_iso8601!("2026-06-15T10:00:00")
-)
-
-%MyApp.Meeting{name: "Standup", window: window} |> Repo.insert!()
-
 import Ecto.Query
 import Tempo.Ecto.QueryAPI
+import Tempo.Sigils
 
-search = Tempo.Interval.new!(
-  from: Tempo.from_iso8601!("2026-06-15T09:30:00"),
-  to:   Tempo.from_iso8601!("2026-06-15T09:45:00")
-)
+standup = ~o"2026-06-15T09:00/2026-06-15T10:00"
+Repo.insert!(%MyApp.Meeting{name: "Standup", window: standup})
 
-{:ok, search_range} = Tempo.Ecto.Interval.dump(search)
+{:ok, search} = Tempo.Ecto.Interval.dump(~o"2026-06-15T09:30/2026-06-15T09:45")
 
-Repo.all(
-  from m in MyApp.Meeting,
-    where: overlaps(m.window, ^search_range),
-    select: m.name
-)
+Repo.all(from m in MyApp.Meeting, where: overlaps(m.window, ^search), select: m.name)
 #=> ["Standup"]
 ```
 
-*Meetings whose **window overlaps** the search range — the pipeline reads like the English sentence.*
+> *The meetings whose **window overlaps** the half hour from 9:30.*
 
 ## Ecto types
 
-**Plain range — span only, lossy round-trip:**
+**Plain range — the span only:**
 
-| Type                       | Stores                          | Postgres column    |
-|----------------------------|---------------------------------|--------------------|
-| `Tempo.Ecto.Interval`      | `%Tempo.Interval{}`             | `tstzrange`        |
-| `Tempo.Ecto.IntervalSet`   | `%Tempo.IntervalSet{}`          | `tstzmultirange`   |
-| `Tempo.Ecto.Tempo`         | bare `%Tempo{}` (implicit span) | `tstzrange`        |
+| Type                       | Stores                                                         | Postgres column    |
+|----------------------------|----------------------------------------------------------------|--------------------|
+| `Tempo.Ecto.Interval`      | an expression of one span: a value or an interval              | `tstzrange`        |
+| `Tempo.Ecto.IntervalSet`   | an expression with a last span: a set, a bounded recurrence    | `tstzmultirange`   |
+| `Tempo.Ecto.Tempo`         | as `Tempo.Ecto.Interval`, under the name kept for older schemas | `tstzrange`        |
 
-**Composite — full Tempo shape, byte-exact round-trip:**
+**Composite — the whole expression, read back as it was written:**
 
-| Type                          | Stores                 | Postgres column    |
-|-------------------------------|------------------------|--------------------|
-| `Tempo.Ecto.TempoRange`       | `%Tempo.Interval{}`    | `tempo_range`      |
-| `Tempo.Ecto.TempoMultirange`  | `%Tempo.IntervalSet{}` | `tempo_multirange` |
+| Type                          | Stores                                     | Postgres column    |
+|-------------------------------|--------------------------------------------|--------------------|
+| `Tempo.Ecto.TempoRange`       | any expression with ISO 8601 text          | `tempo_range`      |
+| `Tempo.Ecto.TempoMultirange`  | any expression with ISO 8601 text          | `tempo_multirange` |
 
-Use the composite types when the plain-range mode's losses hurt — recurrence rules, qualifications (`:uncertain`, `:approximate`), non-Gregorian calendars, zone identifiers, or the implicit-vs-explicit-span distinction. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#composite-mode--tempo_range-and-tempo_multirange) for setup and trade-offs.
+Use the composite types when the plain-range mode's losses hurt — recurrences, qualifications (`:uncertain`, `:approximate`), calendars other than the Gregorian, zones, metadata, or the resolution a value was written to. The composite stores the stretch the expression covers, so range queries still find it, beside its ISO 8601 text. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#composite-mode--tempo_range-and-tempo_multirange) for setup and trade-offs.
 
-`Tempo.Ecto.Tempo` materialises a partial Tempo value (`~o"2026Y"`, `~o"2026Y-06M"`) to its explicit span before writing. On load you get back a `%Tempo.Interval{}` — the "it was just a year token" fact doesn't round-trip.
+An end written to a date is read through it, so a value or an interval is stored as the instants it runs between: `~o"2026-06-15/2026-06-20"` is the six days, the range `[2026-06-15 00:00, 2026-06-21 00:00)`, and `~o"2026"` is the year, `[2026-01-01 00:00, 2027-01-01 00:00)`. A plain range keeps no resolution, so the year comes back as the instants that bound it unless the column declares one.
 
 ### The `:resolution` field option
 
-All three types accept a `:resolution` field option that truncates loaded endpoints to a named Tempo component — `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second` (the default):
+All three plain types accept a `:resolution` field option that writes loaded ends to a named unit — `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second` (the default):
 
 ```elixir
 schema "reports" do
   field :reporting_year,  Tempo.Ecto.Interval, resolution: :year
   field :daily_window,    Tempo.Ecto.Interval, resolution: :day
-  field :meeting_window,  Tempo.Ecto.Interval   # full second resolution
+  field :meeting_window,  Tempo.Ecto.Interval   # to the second
 end
 ```
 
-A column declared `resolution: :year` always loads as year-resolution Tempos, regardless of what the underlying `tstzrange` stored — it's a caller-side assertion about column contents, not a heuristic. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#preserving-resolution--the-options) for the caveats.
+A column declared `resolution: :year` loads a range of whole years as the years it holds (`2026/2026` for the range of 2026), whatever the underlying `tstzrange` stored — it's a caller-side assertion about column contents, not a heuristic. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#preserving-resolution--the-options) for the caveats.
 
 ## Query API
 
@@ -149,53 +137,41 @@ All three are thin delegates — you can also write the raw `add :window, :tstzr
 
 ## Storage contract
 
-**Not every Tempo value can be stored as a Postgres range.** Tempo expresses things that `tstzrange` / `tstzmultirange` cannot: qualifications, recurrence rules, non-Gregorian calendars, multi-valued token slots. `tempo_sql` is *explicit* about this — rather than silently lose information, it returns `:error` from `dump/1`, which surfaces as an `Ecto.ChangeError` at insert time.
+**Not every Tempo expression can be stored as a Postgres range.** Tempo expresses things that `tstzrange` / `tstzmultirange` cannot: qualifications, recurrences with no end, calendars other than the Gregorian, values with no year. The plain types are *explicit* about this — rather than silently lose information, they return `:error` from `dump/1`, which surfaces as an `Ecto.ChangeError` at insert time.
 
-For the full mapping — what is retained, what is dropped, what is rejected, and how Tempo's resolution-by-omission convention interacts with Postgres ranges — see the [**Storage contract guide**](https://hexdocs.pm/ex_tempo_sql/storage-contract.html). The summary:
+For the full mapping — what is kept, what is dropped, what is refused — see the [**Storage contract guide**](https://hexdocs.pm/ex_tempo_sql/storage-contract.html). The summary:
 
 ### What **is** storable
 
-* **Fully-anchored `Tempo.Interval` values** — `from` and `to` are `%Tempo{}` values whose token lists contain enough of year / month / day / hour / minute / second to be materialised to a `NaiveDateTime`. Sub-fields default to calendar zero (month 1, day 1, hour/minute/second 0), so `~o"2026Y"` used as an endpoint lands on `2026-01-01T00:00:00Z`.
+* **A value or an interval with a year** under `Tempo.Ecto.Interval`, stored as the instants it runs between.
 
-* **Partial open-ended intervals** — `from: :undefined` or `to: :undefined` (but not both) map to unbounded range sides (`(, upper]` or `[lower, )`).
+* **An interval open at one end** — `~o"2026-06-15/.."` or `~o"../2026-06-15"` — as a range unbounded on that side.
 
-* **`Tempo.IntervalSet` values** with at least one member, where every member is itself storable under the rules above. The set's own `:metadata` field is dropped.
+* **A set, a bounded recurrence, or a value that names several** (`~o"2026Y{6,8}M"`) under `Tempo.Ecto.IntervalSet`, one range a span. Postgres keeps a multirange's adjacent ranges as one, so a recurrence's back-to-back occurrences come back joined.
 
-* **UTC or offset-shifted Tempo values** — a `:shift` offset is applied to land on UTC before handing the value to Postgres.
+* **A value at a time shift** (`Z`, `+02:00`), or in a named zone where the application configures a time zone database, stored as the UTC instants it is.
 
-### What is **not** storable (returns `:error`)
+### What is **not** storable by the plain types (returns `:error`)
 
-* Intervals with `recurrence != 1` or a `repeat_rule` — materialise them first via `Tempo.to_interval/1` into a `Tempo.IntervalSet` and store that instead.
+* An expression of several spans under `Tempo.Ecto.Interval`, and a recurrence with no end under `Tempo.Ecto.IntervalSet`.
 
-* Intervals that are unbounded on both sides.
+* An interval unbounded on both sides.
 
-* Tempo endpoints with a `:qualification` (`:uncertain`, `:approximate`) — Postgres ranges have no notion of uncertainty.
+* A qualified value (`:uncertain`, `:approximate`) — Postgres ranges have no notion of uncertainty.
 
-* Tempo endpoints on a non-Gregorian calendar — no automatic conversion; convert first.
+* A value of a calendar other than the Gregorian — convert it first with `Tempo.to_calendar/2`.
 
-* Tempo endpoints with multi-valued token slots (`day_of_week: [1, 3, 5]`, `day: 1..15`) — these don't collapse to a single instant.
+* A value with no year (`~o"T09/T17"`), which has no instant to store.
 
-* Tempo endpoints that still carry a week token (`year: 2026, week: 10`) or a day with no month (`year: 2026, day: 75`) — these need calendar conversion to name an instant, so materialise them first via `Tempo.to_date/1` / `Tempo.to_interval/1`. Note that parsing already resolves most of these: `~o"2026-075"` and `~o"2026-W10-3"` both arrive as ordinary calendar dates and store without complaint. The refusal bites for values built from these tokens directly, and for a bare week such as `~o"2026-W10"`, which names no single day.
+* An empty set — use a NULL column if you need "no set".
 
-* Empty `Tempo.IntervalSet` values — use a NULL column if you need "no set".
+### What is **lossy on round-trip**
 
-### What is **lossy on round-trip** (round 1)
-
-For the initial release, a stored value and a loaded value match **only** on their interval shape, not their metadata. Round-trip discards:
-
-* `Tempo.Interval.metadata`
-
-* `Tempo.IntervalSet.metadata`
-
-* Tempo `:extended` metadata (zone_id, IXDTF tags)
-
-* The distinction between an *implicit* span (`~o"2026Y"`) and its materialisation (`2026-01-01..2027-01-01`)
-
-A loaded value is always Gregorian, UTC (shift `[hour: 0]`, zone_id `"Etc/UTC"`). A future release will add a `:text` storage variant (ISO 8601 in a text column) that preserves the original Tempo shape byte-for-byte for callers who need perfect round-trip.
+A plain range keeps the span and nothing else. A loaded value is Gregorian and at UTC, its ends to the second or to the column's `:resolution`. Lost on the way are the expression's metadata, its zone (an expression in a zone comes back at UTC), and the resolution it was written to. The composite types keep all of these.
 
 ## Testing against a live database
 
-`mix test` runs the unit tests in-process (no DB). To exercise the integration tests in `test/db_test.exs`, configure `config/test.exs` to point at a PostgreSQL 14+ instance:
+The test suite needs a PostgreSQL 14+ instance. Configure `config/test.exs` to point at it:
 
 ```elixir
 config :ex_tempo_sql, Tempo.SQL.Repo,
@@ -211,4 +187,4 @@ config :ex_tempo_sql, Tempo.SQL.Repo,
 
 ## License
 
-Apache-2.0. See [LICENSE.md](LICENSE.md).
+Apache-2.0. See [LICENSE.md](https://github.com/elixir-tempo/tempo_sql/blob/v0.3.0/LICENSE.md).

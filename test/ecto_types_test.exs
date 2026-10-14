@@ -16,15 +16,11 @@ defmodule Tempo.SQL.EctoTypesTest do
   alias Tempo.Ecto.Tempo, as: TempoType
   alias Tempo.Ecto.TempoMultirange
   alias Tempo.Ecto.TempoRange
+  alias Tempo.SQL.Meta
 
   @second %{resolution: :second}
 
-  defp interval do
-    Tempo.Interval.new!(
-      from: Tempo.from_iso8601!("2027-06-15T09:00:00"),
-      to: Tempo.from_iso8601!("2027-06-15T10:00:00")
-    )
-  end
+  defp interval, do: ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
 
   defp interval_set do
     Tempo.IntervalSet.new!([interval()])
@@ -68,17 +64,19 @@ defmodule Tempo.SQL.EctoTypesTest do
       assert TempoRange.cast(interval(), @second) == {:ok, interval()}
     end
 
-    test "a bare Tempo materialises to its implicit span" do
-      assert {:ok, %Tempo.Interval{} = cast} = TempoRange.cast(~o"2027Y", @second)
-      assert Tempo.to_iso8601(cast.from) == "2027Y"
+    test "a value casts to the interval it denotes for a plain range" do
+      assert IntervalType.cast(~o"2027Y", @second) == {:ok, ~o"2027Y/2027Y"}
     end
 
-    test "a Tempo that materialises to a set is rejected by a single-range type" do
-      # A one-of set spans several disjoint intervals, which a single
-      # `tstzrange` column cannot hold.
-      {:ok, disjoint} = Tempo.from_iso8601("{2027,2029}Y")
+    test "a composite keeps any expression as it was given" do
+      assert TempoRange.cast(~o"2027Y", @second) == {:ok, ~o"2027Y"}
+      assert TempoRange.cast(~o"{2027,2029}Y", @second) == {:ok, ~o"{2027,2029}Y"}
+      assert TempoMultirange.cast(~o"R3/2027-06-01/P1W", @second) == {:ok, ~o"R3/2027-06-01/P1W"}
+    end
 
-      assert TempoRange.cast(disjoint, @second) == :error
+    test "an expression of several spans is rejected by a plain single-range type" do
+      # Two disjoint years, which a single `tstzrange` column cannot hold.
+      assert IntervalType.cast(~o"{2027,2029}Y", @second) == :error
     end
 
     test "an interval set casts to itself" do
@@ -118,9 +116,10 @@ defmodule Tempo.SQL.EctoTypesTest do
                TempoRange.dump(interval(), nil, %{resolution: :year})
     end
 
-    test "a bare Tempo dumps by materialising first" do
-      assert {:ok, {%Postgrex.Range{}, _resolution, _meta}} =
-               TempoRange.dump(~o"2027Y", nil, @second)
+    test "a value dumps as the span it denotes, its text in the metadata" do
+      assert {:ok, {range, "second", meta}} = TempoRange.dump(~o"2027Y", nil, @second)
+      assert {range.lower, range.upper} == {~U[2027-01-01 00:00:00Z], ~U[2028-01-01 00:00:00Z]}
+      assert {:ok, ~o"2027Y"} = Meta.decode_interval(meta)
     end
 
     test "values of the wrong shape are rejected" do
@@ -140,20 +139,22 @@ defmodule Tempo.SQL.EctoTypesTest do
     test "a dumped interval loads back as an interval" do
       {:ok, dumped} = IntervalType.dump(interval(), nil, @second)
 
-      assert {:ok, %Tempo.Interval{}} = IntervalType.load(dumped, nil, @second)
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} =
+               IntervalType.load(dumped, nil, @second)
     end
 
     test "a composite row without metadata falls back to plain range decoding" do
       {:ok, range} = IntervalType.dump(interval(), nil, @second)
 
-      assert {:ok, %Tempo.Interval{}} = TempoRange.load({range, "second", nil}, nil, @second)
+      assert {:ok, ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"} =
+               TempoRange.load({range, "second", nil}, nil, @second)
     end
 
     test "a composite row with metadata is decoded from the metadata" do
       {:ok, {range, resolution, meta}} = TempoRange.dump(interval(), nil, @second)
 
-      assert {:ok, %Tempo.Interval{}} =
-               TempoRange.load({range, resolution, meta}, nil, @second)
+      # The metadata holds the expression as it was, with no zone.
+      assert {:ok, interval()} == TempoRange.load({range, resolution, meta}, nil, @second)
     end
 
     test "values of the wrong shape are rejected" do
@@ -193,8 +194,8 @@ defmodule Tempo.SQL.EctoTypesTest do
       {:ok, dumped} = IntervalType.dump(interval(), nil, @second)
       {:ok, loaded} = IntervalType.load(dumped, nil, @second)
 
-      assert Tempo.grounded?(loaded.from)
-      refute Tempo.grounded?(interval().from)
+      assert Tempo.zoned?(loaded)
+      assert Tempo.floating?(interval())
     end
 
     test "the round-trip is stable — dumping a loaded value reproduces the range" do

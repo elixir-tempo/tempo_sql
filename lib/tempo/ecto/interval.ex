@@ -1,8 +1,11 @@
 if Code.ensure_loaded?(Ecto.Type) do
   defmodule Tempo.Ecto.Interval do
     @moduledoc """
-    Ecto.ParameterizedType for persisting a `t:Tempo.Interval.t/0`
-    as a PostgreSQL `tstzrange` value.
+    Ecto.ParameterizedType for persisting an interval as a
+    PostgreSQL `tstzrange` value.
+
+    It takes any expression that is one span — an interval, or a value
+    (`~o"2026-06"`) as the interval it names — and loads an interval.
 
     ## Usage
 
@@ -32,26 +35,23 @@ if Code.ensure_loaded?(Ecto.Type) do
     This type refuses to store values it cannot round-trip
     semantically. The `dump` callback returns `:error` for:
 
-      * Intervals with a recurrence count (`recurrence != 1`) or
-        a `repeat_rule`. Materialise into a
-        `t:Tempo.IntervalSet.t/0` via `Tempo.to_interval/1` and
-        store the set as `Tempo.Ecto.IntervalSet` instead.
+      * An expression of several spans: a recurrence, a set, or a
+        value naming several (`~o"2026Y{6,8}M"`). Store those as
+        `Tempo.Ecto.IntervalSet` instead.
 
-      * Tempo endpoints with a `:qualification` (`:uncertain`,
-        `:approximate`), a non-Gregorian calendar, or
-        multi-valued token slots (`day_of_week: [1, 3, 5]`,
-        `day: 1..15`).
+      * A qualification (`:uncertain`, `:approximate`) or a calendar
+        other than the Gregorian, which a range of instants cannot
+        keep. `Tempo.Ecto.TempoRange` keeps both.
 
-      * Intervals that are unbounded on both sides. Partial open
-        ends (`from: :undefined` or `to: :undefined`) are stored
-        as `(,b]` / `[a,)` ranges in Postgres.
+      * An interval unbounded on both sides. One open end is stored
+        as a `(,b)` or `[a,)` range in Postgres.
 
     ## Bracket normalisation on load
 
     PostgreSQL does not canonicalise `tstzrange` values on
     output — a column populated by another writer might hold
     `[a, b]`, `(a, b)`, or `(a, b]`. The loader normalises any
-    non-half-open range to Tempo's `[first, last)` convention
+    non-half-open range to `[lower, upper)`
     by shifting the offending endpoint one second (Tempo is
     second-resolution so this is exact).
 
@@ -111,8 +111,13 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def cast(nil, _params), do: {:ok, nil}
-    def cast(%Tempo.Interval{} = interval, _params), do: materialise(interval)
-    def cast(%Tempo{} = tempo, _params), do: materialise(tempo)
+
+    def cast(%Tempo{} = expression, _params) do
+      case Conversion.as_interval(expression) do
+        {:ok, interval} -> {:ok, interval}
+        {:error, _} -> :error
+      end
+    end
 
     def cast(%Postgrex.Range{} = range, params) do
       case Conversion.range_to_interval(range, resolution: params.resolution) do
@@ -125,7 +130,6 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-
     def load(nil, _loader, _params), do: {:ok, nil}
 
     def load(%Postgrex.Range{} = range, _loader, params) do
@@ -139,11 +143,10 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-
     def dump(nil, _, _), do: {:ok, nil}
 
-    def dump(%Tempo.Interval{} = interval, _, _) do
-      case Conversion.interval_to_range(interval) do
+    def dump(%Tempo{} = expression, _, _) do
+      case Conversion.interval_to_range(expression) do
         {:ok, range} -> {:ok, range}
         {:error, _} -> :error
       end
@@ -156,16 +159,5 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def embed_as(_format, _params), do: :self
-
-    defp materialise(%Tempo.Interval{from: %Tempo{}, to: %Tempo{}} = interval),
-      do: {:ok, interval}
-
-    defp materialise(value) do
-      case Tempo.to_interval(value) do
-        {:ok, %Tempo.Interval{} = interval} -> {:ok, interval}
-        {:ok, %Tempo.IntervalSet{}} -> :error
-        _ -> :error
-      end
-    end
   end
 end

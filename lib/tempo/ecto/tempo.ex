@@ -1,13 +1,14 @@
 if Code.ensure_loaded?(Ecto.Type) do
   defmodule Tempo.Ecto.Tempo do
     @moduledoc """
-    Ecto.ParameterizedType for persisting a bare `t:Tempo.t/0` as
-    a PostgreSQL `tstzrange`.
+    Ecto.ParameterizedType for persisting a value as a PostgreSQL
+    `tstzrange`: `Tempo.Ecto.Interval` under the name `tempo_sql` 0.2.0
+    gave a column of bare values, kept so that schemas written for it
+    still compile.
 
-    A bare Tempo value is an *implicit* span — `~o"2026Y"` spans
-    the whole of 2026, `~o"2026Y-06M"` spans June 2026. This type
-    materialises the implicit span via `Tempo.to_interval/1` and
-    then delegates to `Tempo.Ecto.Interval`.
+    A value is the span it names — `~o"2026Y"` the whole of 2026,
+    `~o"2026Y-06M"` June 2026 — and is stored as that interval, as
+    `Tempo.Ecto.Interval` stores it.
 
     ## Usage
 
@@ -17,30 +18,21 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     ## Options
 
-      * `:resolution` — same as `Tempo.Ecto.Interval`. With
-        `:year`, loaded values come back as year-resolution
-        Tempos (the closest shape-preserving round-trip
-        available for implicit spans).
+      * `:resolution` — as for `Tempo.Ecto.Interval`. With `:year`, a
+        year loads as the interval from that year through itself.
 
     ## Round-trip caveat
 
-    *Implicit spans do not round-trip as implicit spans without
-    help.* A stored `~o"2026Y"` loads back as a
-    `%Tempo.Interval{}` — there is no way to recover "it was
-    just a year token" from a `tstzrange` alone. Setting
-    `resolution: :year` gives the closest approximation by
-    returning an interval whose endpoints are year-resolution
-    Tempos. See the storage contract guide.
-
-    Tempo values that materialise to an `IntervalSet` (any value
-    with a recurrence rule) are rejected — use a
-    `Tempo.Ecto.IntervalSet` column instead.
+    A stored `~o"2026Y"` loads back as the interval it names, not the
+    value: a `tstzrange` keeps no more. `Tempo.Ecto.TempoRange` keeps
+    the value as it was written.
 
     """
 
     use Ecto.ParameterizedType
 
     alias Ecto.ParameterizedType
+    alias Tempo.Ecto.Interval, as: IntervalType
     alias Tempo.SQL.Conversion
 
     @doc """
@@ -55,7 +47,7 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     ### Options
 
-    * `:resolution` truncates the materialised endpoints on load to the given component. One of
+    * `:resolution` writes the ends to the given unit on load. One of
       `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
       Defaults to `:second`.
 
@@ -90,53 +82,20 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def cast(nil, _params), do: {:ok, nil}
-    def cast(%Tempo{} = tempo, _params), do: materialise(tempo)
-    def cast(%Tempo.Interval{} = interval, _params), do: {:ok, interval}
-
-    def cast(%Postgrex.Range{} = range, params) do
-      Tempo.Ecto.Interval.cast(range, params)
-    end
-
-    def cast(_, _params), do: :error
+    def cast(value, params), do: IntervalType.cast(value, params)
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second})
-
-    def load(value, loader, params) do
-      Tempo.Ecto.Interval.load(value, loader, params)
-    end
+    def load(value, loader \\ nil, params \\ %{resolution: :second}),
+      do: IntervalType.load(value, loader, params)
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-
-    def dump(nil, _, _), do: {:ok, nil}
-
-    def dump(%Tempo{} = tempo, dumper, params) do
-      case materialise(tempo) do
-        {:ok, interval} -> Tempo.Ecto.Interval.dump(interval, dumper, params)
-        :error -> :error
-      end
-    end
-
-    def dump(%Tempo.Interval{} = interval, dumper, params) do
-      Tempo.Ecto.Interval.dump(interval, dumper, params)
-    end
-
-    def dump(_, _, _), do: :error
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second}),
+      do: IntervalType.dump(value, dumper, params)
 
     @impl Ecto.ParameterizedType
     def equal?(a, b, _params), do: a == b
 
     @impl Ecto.ParameterizedType
     def embed_as(_format, _params), do: :self
-
-    defp materialise(%Tempo{} = tempo) do
-      case Tempo.to_interval(tempo) do
-        {:ok, %Tempo.Interval{} = interval} -> {:ok, interval}
-        {:ok, %Tempo.IntervalSet{}} -> :error
-        _ -> :error
-      end
-    end
   end
 end

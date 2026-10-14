@@ -8,15 +8,19 @@ defmodule Tempo.SQL do
 
   The entry-point modules are:
 
-    * `Tempo.Ecto.Interval` — stores a `t:Tempo.Interval.t/0` as
-      `tstzrange`.
+    * `Tempo.Ecto.Interval` — stores an expression of one span (a
+      value, or an interval) as `tstzrange`.
 
-    * `Tempo.Ecto.IntervalSet` — stores a `t:Tempo.IntervalSet.t/0`
-      as `tstzmultirange`.
+    * `Tempo.Ecto.IntervalSet` — stores an expression with a last span
+      (a set, a bounded recurrence, a value that names several) as
+      `tstzmultirange`, one range a span.
 
-    * `Tempo.Ecto.Tempo` — stores a bare `t:Tempo.t/0` by
-      materialising it through `Tempo.to_interval/1` and then
-      delegating to `Tempo.Ecto.Interval`.
+    * `Tempo.Ecto.Tempo` — `Tempo.Ecto.Interval` under the name it had
+      for a bare value, kept so that schemas naming it go on working.
+
+    * `Tempo.Ecto.TempoRange` and `Tempo.Ecto.TempoMultirange` — store
+      any expression losslessly, as the span it covers (or the spans)
+      beside its ISO 8601 text.
 
     * `Tempo.SQL.Migration` — `add :window, Tempo.Interval` helper
       for Ecto migrations.

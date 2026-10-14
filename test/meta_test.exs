@@ -1,154 +1,230 @@
 defmodule Tempo.SQL.MetaTest do
   use ExUnit.Case, async: true
 
+  import Tempo.Sigils
+
   alias Tempo.Interval
+  alias Tempo.IntervalSet
   alias Tempo.SQL.Meta
 
+  defp round_trip(expression) do
+    {:ok, json} = Meta.encode_interval(expression)
+    {:ok, loaded} = json |> IO.iodata_to_binary() |> Meta.decode_interval()
+    loaded
+  end
+
+  defp document(expression) do
+    {:ok, json} = Meta.encode_interval(expression)
+    json |> IO.iodata_to_binary() |> Meta.decode_json()
+  end
+
   describe "encode/decode round-trip — the shapes the plain-range types reject" do
-    test "year-resolution implicit span survives" do
-      year = Tempo.from_iso8601!("2026")
-      {:ok, interval} = Interval.new(from: year, to: Tempo.from_iso8601!("2027"))
+    test "a year through a year keeps its resolution" do
+      loaded = round_trip(~o"2026/2026")
 
-      json = interval |> Meta.encode_interval() |> IO.iodata_to_binary()
-      {:ok, loaded} = Meta.decode_interval(json)
-
-      # The loaded `from` endpoint still has only a year token.
-      assert loaded.from.time == [year: 2026]
-      assert loaded.to.time == [year: 2027]
+      assert loaded == ~o"2026/2026"
+      assert Tempo.resolution(Interval.from(loaded)) == :year
     end
 
-    test "qualified (uncertain) endpoint survives" do
-      {:ok, interval} = Tempo.from_iso8601("1984?/2004~")
+    test "qualified (uncertain) ends survive" do
+      loaded = round_trip(~o"1984?/2004~")
 
-      json = interval |> Meta.encode_interval() |> IO.iodata_to_binary()
-      {:ok, loaded} = Meta.decode_interval(json)
-
-      assert loaded.from.qualification == :uncertain
-      assert loaded.to.qualification == :approximate
+      assert loaded == ~o"1984?/2004~"
+      assert Tempo.qualification(Interval.from(loaded)) == %{year: :uncertain}
+      assert Tempo.qualification(Interval.to(loaded)) == %{year: :approximate}
     end
 
-    test "recurrence rule survives" do
-      {:ok, interval} = Tempo.from_iso8601("R5/2022-01-01/P1M")
+    test "a recurrence survives" do
+      loaded = round_trip(~o"R5/2022-01-01/P1M")
 
-      json = interval |> Meta.encode_interval() |> IO.iodata_to_binary()
-      {:ok, loaded} = Meta.decode_interval(json)
+      assert loaded == ~o"R5/2022-01-01/P1M"
+      assert IntervalSet.count(loaded) == 5
+    end
 
-      assert loaded.recurrence == 5
-      assert %Tempo.Duration{} = loaded.duration
+    test "an unbounded recurrence survives" do
+      assert round_trip(~o"R/2022-01-01/P1M") == ~o"R/2022-01-01/P1M"
+    end
+
+    test "a recurrence with a selection rule survives" do
+      {:ok, christmas_day} = Tempo.selection(month: 12, day: 25)
+      {:ok, christmas} = Tempo.every(~o"P1Y", from: ~o"2022-01-01", select: christmas_day)
+      assert round_trip(christmas) == christmas
     end
 
     test "user metadata passes through when JSON-serialisable" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T10:00:00")
+      meeting =
+        Tempo.put_metadata(~o"2026-06-15T09:00:00/2026-06-15T10:00:00", %{
+          "source" => "calendar-import",
+          "priority" => 3
+        })
 
-      interval = %Tempo.Interval{
-        from: from,
-        to: to,
-        metadata: %{"source" => "calendar-import", "priority" => 3}
-      }
+      assert Tempo.metadata(round_trip(meeting)) == %{
+               "source" => "calendar-import",
+               "priority" => 3
+             }
+    end
 
-      json = interval |> Meta.encode_interval() |> IO.iodata_to_binary()
-      {:ok, loaded} = Meta.decode_interval(json)
+    test "each member of a set keeps its own metadata" do
+      set =
+        IntervalSet.new!([
+          Tempo.put_metadata(~o"2026-06-01/2026-06-02", %{"name" => "first"}),
+          Tempo.put_metadata(~o"2026-06-10/2026-06-11", %{"name" => "second"})
+        ])
 
-      assert loaded.metadata == %{"source" => "calendar-import", "priority" => 3}
+      loaded = round_trip(set)
+
+      assert loaded == set
+
+      assert Enum.map(IntervalSet.members(loaded), &Tempo.metadata/1) == [
+               %{"name" => "first"},
+               %{"name" => "second"}
+             ]
     end
   end
 
   describe "encode_interval/1" do
-    test "produces a string with the expected top-level keys" do
-      from = Tempo.from_iso8601!("2026-06-15T09:00:00")
-      to = Tempo.from_iso8601!("2026-06-15T10:00:00")
-      {:ok, interval} = Interval.new(from: from, to: to)
+    test "writes version 3 with the expression's text" do
+      decoded = document(~o"2026-06-15T09:00:00/2026-06-15T10:00:00")
 
-      decoded = interval |> Meta.encode_interval() |> IO.iodata_to_binary() |> Meta.decode_json()
+      assert decoded["v"] == 3
 
-      assert Map.has_key?(decoded, "v")
-      assert Map.has_key?(decoded, "from")
-      assert Map.has_key?(decoded, "to")
-      assert Map.has_key?(decoded, "recurrence")
-      assert decoded["v"] == 2
-      assert decoded["recurrence"] == 1
-      assert decoded["direction"] == 1
+      assert {:ok, ~o"2026-06-15T09:00:00/2026-06-15T10:00:00"} =
+               Tempo.from_iso8601(decoded["expression"])
+
+      assert decoded["metadata"] == %{}
+      assert decoded["members"] == nil
     end
 
-    test "unbounded endpoints encode as the ISO 8601 open marker" do
-      to = Tempo.from_iso8601!("2026-06-15T10:00:00")
-      {:ok, interval} = Interval.new(from: :undefined, to: to)
+    test "an open end is written as the ISO 8601 open marker" do
+      decoded = document(~o"../2026-06-15T10:00:00")
 
-      decoded = interval |> Meta.encode_interval() |> IO.iodata_to_binary() |> Meta.decode_json()
+      assert String.starts_with?(decoded["expression"], "../")
+    end
 
-      assert decoded["from"] == ".."
-      assert is_binary(decoded["to"])
+    test "open ends round-trip on either side" do
+      assert round_trip(~o"../2026-06-15T10:00:00") == ~o"../2026-06-15T10:00:00"
+      assert round_trip(~o"2022-01-01/..") == ~o"2022-01-01/.."
     end
   end
 
-  describe "open-ended versus absent endpoints" do
-    # Tempo distinguishes two things a `to` can be when it is not a
-    # datetime, and they are not interchangeable: `:undefined` is an
-    # explicitly open end (`2022-01-01/..`), while `nil` is no end at
-    # all, as on a recurring interval that takes its extent from a
-    # duration. Encoding both as JSON null loses the difference, and
-    # the value that comes back cannot be rendered.
+  describe "rows written by tempo_sql 0.2.0 are read as they were written to mean" do
+    # Tempo 1.x read an interval's `to` as the instant it stops before.
+    # Tempo 2.0 reads an end written to a date through it, so a stored
+    # calendar-unit end is the unit before the one written.
 
-    defp round_trip(interval) do
+    test "an end written to a day is the day before" do
+      assert {:ok, ~o"2022-01-01/2022-01-04"} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2022Y1M1D","to":"2022Y1M5D","recurrence":1})
+               )
+    end
+
+    test "an end written to a year is the year before" do
+      assert {:ok, ~o"2026/2026"} =
+               Meta.decode_interval(~s({"v":2,"from":"2026Y","to":"2027Y","recurrence":1}))
+    end
+
+    test "an end written to the clock is the same boundary" do
+      assert {:ok, loaded} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2026Y6M15DT9H","to":"2026Y6M15DT10H","recurrence":1,"metadata":{"source":"import"}})
+               )
+
+      assert loaded ==
+               Tempo.put_metadata(~o"2026-06-15T09/2026-06-15T10", %{"source" => "import"})
+    end
+
+    test "the stored span is the span read back" do
       {:ok, loaded} =
-        interval
-        |> Meta.encode_interval()
-        |> IO.iodata_to_binary()
-        |> Meta.decode_interval()
+        Meta.decode_interval(~s({"v":2,"from":"2022Y1M1D","to":"2022Y1M5D","recurrence":1}))
 
-      loaded
+      assert {:ok, {~N[2022-01-01 00:00:00], ~N[2022-01-05 00:00:00]}} =
+               Interval.instants(loaded)
     end
 
-    test "a recurring interval keeps its absent end, and can still be rendered" do
-      {:ok, recurring} = Tempo.from_iso8601("R5/2022-01-01/P1M")
-      assert recurring.to == nil
+    test "qualifications are kept" do
+      assert {:ok, loaded} =
+               Meta.decode_interval(~s({"v":2,"from":"1984Y?","to":"2004Y~","recurrence":1}))
 
-      loaded = round_trip(recurring)
-
-      assert loaded.to == nil
-      assert Tempo.to_iso8601(loaded) == Tempo.to_iso8601(recurring)
+      assert Tempo.qualification(Interval.from(loaded)) == %{year: :uncertain}
+      assert Tempo.qualification(Interval.to(loaded)) == %{year: :approximate}
     end
 
-    test "an open-ended interval keeps its open end" do
-      {:ok, open} = Interval.new(from: Tempo.from_iso8601!("2022-01-01"), to: :undefined)
-
-      loaded = round_trip(open)
-
-      assert loaded.to == :undefined
-      assert Tempo.to_iso8601(loaded) == Tempo.to_iso8601(open)
+    test "a recurrence from its start, of a duration" do
+      assert {:ok, ~o"R5/2022-01-01/P1M"} =
+               Meta.decode_interval(
+                 ~s({"v":2,"duration":"P1M","from":"2022Y1M1D","recurrence":5,"to":null})
+               )
     end
 
-    test "an open start is distinguished from an absent one" do
-      {:ok, open} = Interval.new(from: :undefined, to: Tempo.from_iso8601!("2022-01-01"))
-
-      assert round_trip(open).from == :undefined
+    test "an unbounded recurrence" do
+      assert {:ok, ~o"R/2022-01-01/P1M"} =
+               Meta.decode_interval(
+                 ~s({"v":2,"duration":"P1M","from":"2022Y1M1D","recurrence":"infinity","to":null})
+               )
     end
-  end
 
-  describe "version 1 rows still decode" do
+    test "a recurrence counted back from its end keeps its occurrences" do
+      assert {:ok, loaded} =
+               Meta.decode_interval(
+                 ~s({"v":2,"duration":"P1M","from":"..","recurrence":5,"to":"2022Y6M1D"})
+               )
+
+      assert IntervalSet.count(loaded) == 5
+      assert IntervalSet.first(loaded) == ~o"2022-01-01/2022-01-31"
+    end
+
+    test "a recurrence of a start and an end repeats that span" do
+      assert {:ok, ~o"R3/2022-01-01/P2D"} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2022Y1M1D","recurrence":3,"to":"2022Y1M3D"})
+               )
+    end
+
+    test "a recurrence with a selection rule" do
+      assert {:ok, loaded} =
+               Meta.decode_interval(
+                 ~s({"v":2,"duration":"P1Y","from":"2022Y1M1D","recurrence":"infinity","repeat_rule":"L12M25DN","to":null})
+               )
+
+      {:ok, christmas_day} = Tempo.selection(month: 12, day: 25)
+      assert {:ok, ^loaded} = Tempo.every(~o"P1Y", from: ~o"2022-01-01", select: christmas_day)
+    end
+
+    test "a set, with its metadata" do
+      assert {:ok, loaded} =
+               Meta.decode_interval(
+                 ~s({"v":2,"intervals":[{"v":2,"from":"2026Y6M1D","to":"2026Y6M3D"},{"v":2,"from":"2026Y6M10D","to":"2026Y6M12D"}],"metadata":{"k":"v"}})
+               )
+
+      assert IntervalSet.members(loaded) == [~o"2026-06-01/2026-06-02", ~o"2026-06-10/2026-06-11"]
+      assert Tempo.metadata(loaded) == %{"k" => "v"}
+    end
+
     # 0.1.0 wrote no `..` marker and read every null endpoint as
-    # open-ended. Those rows must keep decoding the way they always
-    # have — that reading is all the information they carry.
-    test "a null endpoint in a v1 row reads as open-ended" do
-      v1 = ~s({"v":1,"from":"2022Y1M1D","to":null,"recurrence":1,"direction":1})
-
-      assert {:ok, interval} = Meta.decode_interval(v1)
-      assert interval.to == :undefined
+    # open-ended; 0.2.0 wrote `..` for an open end and null for an end a
+    # duration gave. An interval with neither is open either way.
+    test "a null end of a version 1 row is open" do
+      assert {:ok, ~o"2022-01-01/.."} =
+               Meta.decode_interval(
+                 ~s({"v":1,"from":"2022Y1M1D","to":null,"recurrence":1,"direction":1})
+               )
     end
 
-    test "a v2 row reads a null endpoint as absent instead" do
-      v2 = ~s({"v":2,"from":"2022Y1M1D","to":null,"recurrence":1,"direction":1})
-
-      assert {:ok, interval} = Meta.decode_interval(v2)
-      assert interval.to == nil
+    test "a null end of a version 2 interval with no duration is open" do
+      assert {:ok, ~o"2022-01-01/.."} =
+               Meta.decode_interval(
+                 ~s({"v":2,"from":"2022Y1M1D","to":null,"recurrence":1,"direction":1})
+               )
     end
 
-    test "a row with no version at all is treated as v1" do
-      unversioned = ~s({"from":"2022Y1M1D","to":null})
+    test "a row with no version at all is read as version 1" do
+      assert {:ok, ~o"2022-01-01/.."} = Meta.decode_interval(~s({"from":"2022Y1M1D","to":null}))
+    end
 
-      assert {:ok, interval} = Meta.decode_interval(unversioned)
-      assert interval.to == :undefined
+    test "an explicit open start" do
+      assert {:ok, ~o"../2021-12-31"} =
+               Meta.decode_interval(~s({"v":2,"from":"..","to":"2022Y1M1D","recurrence":1}))
     end
   end
 
@@ -178,20 +254,30 @@ defmodule Tempo.SQL.MetaTest do
                Meta.decode_interval(~s({"from":"2026","to":"2027","repeat_rule":"P1D"}))
     end
 
+    test "an object that no version wrote" do
+      assert {:error, {:invalid_meta_shape, %{"not" => "a set"}}} =
+               Meta.decode_interval(~s({"not":"a set"}))
+    end
+
     test "JSON that is not an object at all" do
       assert {:error, {:invalid_meta_shape, [1, 2, 3]}} = Meta.decode_interval(~s([1,2,3]))
     end
-  end
 
-  describe "unbounded recurrence" do
-    test "an infinite recurrence survives the round-trip" do
-      {:ok, forever} = Tempo.from_iso8601("R/2022-01-01/P1M")
+    test "a version 3 expression that does not read" do
+      assert {:error, %Tempo.ParseError{}} =
+               Meta.decode_interval(~s({"v":3,"expression":"not-a-date"}))
+    end
 
-      json = forever |> Meta.encode_interval() |> IO.iodata_to_binary()
+    test "a version 3 expression that is a duration" do
+      assert {:error, {:unexpected_expression, %Tempo.Duration{}}} =
+               Meta.decode_interval(~s({"v":3,"expression":"P1D"}))
+    end
 
-      assert Meta.decode_json(json)["recurrence"] == "infinity"
-      assert {:ok, loaded} = Meta.decode_interval(json)
-      assert loaded.recurrence == :infinity
+    test "member metadata that does not match the members" do
+      assert {:error, {:invalid_members_metadata, [%{}]}} =
+               Meta.decode_interval(
+                 ~s({"v":3,"expression":"{2026Y6M1D,2026Y6M10D}","members":[{}]})
+               )
     end
   end
 end

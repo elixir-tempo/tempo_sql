@@ -4,7 +4,8 @@ if Code.ensure_loaded?(Ecto.Type) do
     Ecto.ParameterizedType for the PostgreSQL composite type
     `tempo_multirange` — a `tstzmultirange` paired with a
     resolution string and `jsonb` metadata that together round-
-    trip a full `%Tempo.IntervalSet{}` without information loss.
+    trip a set, or any expression of several spans with ISO 8601 text,
+    without information loss.
 
         CREATE TYPE tempo_multirange AS (
           ranges     tstzmultirange,
@@ -76,10 +77,16 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def cast(nil, _params), do: {:ok, nil}
-    def cast(%Tempo.IntervalSet{} = set, _params), do: {:ok, set}
 
-    def cast(intervals, _params) when is_list(intervals) do
-      case IntervalSet.new(intervals) do
+    def cast(%Tempo{} = expression, _params) do
+      case Tempo.to_iso8601(expression) do
+        {:ok, _text} -> {:ok, expression}
+        {:error, _} -> :error
+      end
+    end
+
+    def cast(members, _params) when is_list(members) do
+      case IntervalSet.new(members) do
         {:ok, set} -> {:ok, set}
         {:error, _} -> :error
       end
@@ -89,33 +96,30 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-
     def load(nil, _loader, _params), do: {:ok, nil}
 
     def load({%Postgrex.Multirange{} = _multirange, _resolution, meta}, _loader, _params)
-        when not is_nil(meta) do
-      decode_set(meta)
-    end
+        when not is_nil(meta),
+        do: loaded(Meta.decode_interval(meta))
 
-    def load({%Postgrex.Multirange{ranges: ranges}, _resolution, nil}, _loader, params) do
-      load_ranges_fallback(ranges, params.resolution)
-    end
+    # A composite row with no meta, written by hand, is read from its ranges.
+    def load({%Postgrex.Multirange{ranges: ranges}, _resolution, nil}, _loader, params),
+      do: loaded(from_ranges(ranges, params.resolution))
 
     def load(_, _, _), do: :error
 
+    # Ecto takes a value that does not load as `:error`, whatever the reason.
+    defp loaded({:ok, expression}), do: {:ok, expression}
+    defp loaded({:error, _reason}), do: :error
+
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-
     def dump(nil, _, _), do: {:ok, nil}
-    def dump(%Tempo.IntervalSet{intervals: []}, _, _), do: :error
 
-    def dump(%Tempo.IntervalSet{intervals: intervals} = set, _, params) do
-      with {:ok, ranges} <- dump_members(intervals, []),
-           meta_json <- encode_set(set) do
-        resolution_text = Atom.to_string(params.resolution)
-        {:ok, {%Postgrex.Multirange{ranges: ranges}, resolution_text, meta_json}}
-      else
-        _ -> :error
+    def dump(%Tempo{} = expression, _, params) do
+      case composite(expression) do
+        {:ok, {multirange, meta}} -> {:ok, {multirange, Atom.to_string(params.resolution), meta}}
+        {:error, _} -> :error
       end
     end
 
@@ -127,75 +131,34 @@ if Code.ensure_loaded?(Ecto.Type) do
     @impl Ecto.ParameterizedType
     def embed_as(_format, _params), do: :self
 
-    # ------------------------------------------------------------------
-
-    defp dump_members([], acc), do: {:ok, Enum.reverse(acc)}
-
-    defp dump_members([interval | rest], acc) do
-      case Conversion.interval_to_queryable_range(interval) do
-        {:ok, range} -> dump_members(rest, [range | acc])
-        {:error, _} -> :error
+    # The ranges of the intervals an expression covers, none empty, and its meta.
+    defp composite(expression) do
+      with {:ok, [_ | _] = intervals} <- Conversion.intervals(expression),
+           {:ok, ranges} <- each(intervals, &Conversion.interval_to_queryable_range/1),
+           {:ok, meta} <- Meta.encode_interval(expression) do
+        {:ok, {%Postgrex.Multirange{ranges: ranges}, IO.iodata_to_binary(meta)}}
       end
+      |> non_empty()
     end
 
-    defp encode_set(%Tempo.IntervalSet{intervals: intervals, metadata: metadata}) do
-      member_jsons =
-        Enum.map(intervals, fn interval ->
-          interval |> Meta.encode_interval() |> IO.iodata_to_binary() |> Meta.decode_json()
-        end)
+    defp non_empty({:ok, []}), do: {:error, :empty_set}
+    defp non_empty({:ok, _} = composite), do: composite
+    defp non_empty({:error, _} = error), do: error
+    defp non_empty(_no_intervals), do: {:error, :empty_set}
 
-      %{
-        "v" => 1,
-        "intervals" => member_jsons,
-        "metadata" => metadata || %{}
-      }
-      |> Meta.encode_json()
+    defp from_ranges(ranges, resolution) do
+      with {:ok, intervals} <-
+             each(ranges, &Conversion.range_to_interval(&1, resolution: resolution)),
+           do: IntervalSet.new(intervals)
     end
 
-    defp decode_set(json) when is_binary(json) do
-      case Meta.decode_json(json) do
-        %{"intervals" => _} = decoded -> decode_set(decoded)
-        other -> {:error, {:invalid_multirange_meta, other}}
-      end
-    end
-
-    defp decode_set(%{"intervals" => members} = map) when is_list(members) do
-      with {:ok, intervals} <- decode_members(members, []) do
-        {:ok,
-         %Tempo.IntervalSet{
-           intervals: intervals,
-           metadata: Map.get(map, "metadata", %{}) || %{}
-         }}
-      end
-    end
-
-    defp decode_set(_), do: {:error, :invalid_multirange_meta}
-
-    defp decode_members([], acc), do: {:ok, Enum.reverse(acc)}
-
-    defp decode_members([member | rest], acc) do
-      case Meta.decode_interval(member) do
-        {:ok, interval} -> decode_members(rest, [interval | acc])
-        {:error, _} = err -> err
-      end
-    end
-
-    defp load_ranges_fallback(ranges, resolution) do
-      with {:ok, intervals} <- reduce_ranges(ranges, resolution, []),
-           {:ok, set} <- IntervalSet.new(intervals) do
-        {:ok, set}
-      else
-        _ -> :error
-      end
-    end
-
-    defp reduce_ranges([], _resolution, acc), do: {:ok, Enum.reverse(acc)}
-
-    defp reduce_ranges([range | rest], resolution, acc) do
-      case Conversion.range_to_interval(range, resolution: resolution) do
-        {:ok, interval} -> reduce_ranges(rest, resolution, [interval | acc])
-        {:error, _} = err -> err
-      end
+    defp each(items, fun) do
+      Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+        case fun.(item) do
+          {:ok, value} -> {:cont, {:ok, acc ++ [value]}}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
     end
   end
 end
