@@ -64,6 +64,7 @@ if Code.ensure_loaded?(Ecto.Type) do
         {:parameterized, {Tempo.Ecto.Tempo, %{resolution: :day}}}
 
     """
+    @spec cast_type(keyword()) :: Ecto.Type.t()
     def cast_type(options \\ []) do
       ParameterizedType.init(__MODULE__, options)
     end

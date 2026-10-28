@@ -43,6 +43,7 @@ defmodule Tempo.SQL.JSON do
       ~s({"ends":null})
 
   """
+  @spec encode_to_iodata!(term()) :: iodata()
   def encode_to_iodata!(term) do
     :json.encode(term, &Meta.nil_aware_encoder/2)
   end
@@ -69,6 +70,7 @@ defmodule Tempo.SQL.JSON do
       %{"ends" => nil}
 
   """
+  @spec decode!(binary()) :: term()
   def decode!(binary) when is_binary(binary) do
     {decoded, :ok, _rest} = :json.decode(binary, :ok, Meta.decode_options())
     decoded

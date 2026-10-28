@@ -2,24 +2,37 @@
 
 All notable changes to `ex_tempo_sql` are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.3.0] — 2026-10-28
 
-### Changed
+### Breaking changes
 
 * Requires `ex_tempo ~> 2.1`. Every type takes and returns a `t:Tempo.t/0` expression; `%Tempo.Interval{}` and `%Tempo.IntervalSet{}` are no more.
-* An end written to a date is read through it, as Tempo 2.0 reads it: `~o"2026-06-15/2026-06-20"` is stored as `[2026-06-15, 2026-06-21)`.
-* `Tempo.Ecto.Interval` takes any expression of one span, and `Tempo.Ecto.IntervalSet` any expression with a last span, a bounded recurrence or a value that names several among them.
-* `Tempo.Ecto.Tempo` is `Tempo.Ecto.Interval` under its old name.
-* The composite types keep any expression with ISO 8601 text, stored with the range it covers from its first span to its last.
-* The composite `meta` format is version 3, holding the expression's ISO 8601 text. Version 1 and 2 rows are read as Tempo 1.x meant them; no migration is needed.
+
+* An end written to a date is read through it, as Tempo 2 reads it: `~o"2026-06-15/2026-06-20"` is stored as `[2026-06-15, 2026-06-21)`.
+
 * A loaded range written to a calendar unit by `:resolution` ends through the last unit it holds: a range of 2026 at `:year` is `2026/2026`.
-* The composite types' `load` returns `:error` for metadata that does not decode, as Ecto expects, where it returned `{:error, reason}`.
 
 ### Added
 
 * Each member of a set stored in a `tempo_multirange` column keeps its own metadata.
 
-## [0.2.0] — 2026-08-03
+### Changed
+
+* `Tempo.Ecto.Interval` takes any expression of one span, and `Tempo.Ecto.IntervalSet` any expression with a last span: a set, a bounded recurrence or a value that names several.
+
+* `Tempo.Ecto.Tempo` is `Tempo.Ecto.Interval` under its old name.
+
+* The composite types keep any expression with ISO 8601 text, stored with the range it covers from its first span to its last.
+
+* The composite `meta` format is version 3, holding the expression's ISO 8601 text. Version 1 and 2 rows are read as Tempo 1.x meant them; no migration is needed.
+
+### Fixed
+
+* `Tempo.SQL.PostgresTypes` is in the package, as the storage contract guide has said since 0.1.0; it was compiled only in development and test.
+
+* The composite types' `load` returns `:error` for metadata that does not decode, as Ecto expects, where it returned `{:error, reason}`.
+
+## [v0.2.0] — 2026-08-03
 
 ### Added
 
@@ -41,7 +54,7 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 * **Requires Erlang/OTP 27 or later**, inherited from `ex_tempo` — OTP 26 is no longer supported and has been dropped from CI.
 
-## [0.1.0] — 2026-07-05
+## [v0.1.0] — 2026-07-05
 
 ### Highlights
 

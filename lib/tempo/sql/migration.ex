@@ -166,6 +166,7 @@ defmodule Tempo.SQL.Migration do
       end
 
   """
+  @spec create_tempo_types() :: :ok
   def create_tempo_types do
     Migration.execute(
       """
@@ -212,6 +213,7 @@ defmodule Tempo.SQL.Migration do
       end
 
   """
+  @spec drop_tempo_types() :: :ok
   def drop_tempo_types do
     Migration.execute(
       "DROP TYPE IF EXISTS tempo_multirange",

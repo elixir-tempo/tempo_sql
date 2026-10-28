@@ -14,14 +14,14 @@ defmodule Tempo.Ecto.QueryAPI do
 
   The mapping to Postgres operators:
 
-    * `contains/2` → `@>` — "does `a` fully contain `b`?"
+    * `contains/2` → `@>` — whether `a` fully contains `b`.
 
-    * `overlaps/2` → `&&` — "do `a` and `b` share any instant?"
+    * `overlaps/2` → `&&` — whether `a` and `b` share any instant.
       Matches Allen's `overlaps`, `overlapped_by`, `starts`,
       `started_by`, `during`, `contains`, `finishes`,
       `finished_by`, `equals` — i.e. any non-disjoint pair.
 
-    * `meets/2` → `-|-` — "is `a` immediately adjacent to `b`?"
+    * `meets/2` → `-|-` — whether `a` is immediately adjacent to `b`.
       Matches Allen's `meets` and `met_by`.
 
     * `strictly_before/2` → `<<` — Allen's `precedes`.

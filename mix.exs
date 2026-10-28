@@ -1,7 +1,7 @@
 defmodule Tempo.Sql.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0"
 
   def project do
     [
@@ -41,8 +41,8 @@ defmodule Tempo.Sql.MixProject do
   end
 
   def description do
-    "Ecto types and migration helpers for persisting Tempo intervals " <>
-      "and interval sets as PostgreSQL tstzrange/tstzmultirange values."
+    "Ecto types, query macros and migration helpers that store Tempo " <>
+      "expressions in PostgreSQL ranges and multiranges."
   end
 
   def package do
@@ -60,7 +60,7 @@ defmodule Tempo.Sql.MixProject do
         "mix.exs",
         "README.md",
         "CHANGELOG.md",
-        "LICENSE.md"
+        "LICENSE*"
       ]
     ]
   end
@@ -81,7 +81,20 @@ defmodule Tempo.Sql.MixProject do
         "CHANGELOG.md",
         "LICENSE.md"
       ],
-      formatters: ["html", "markdown"]
+      formatters: ["html", "markdown"],
+      groups_for_modules: [
+        "Ecto types": [
+          Tempo.Ecto.Interval,
+          Tempo.Ecto.IntervalSet,
+          Tempo.Ecto.Tempo,
+          Tempo.Ecto.TempoRange,
+          Tempo.Ecto.TempoMultirange
+        ],
+        Queries: [Tempo.Ecto.QueryAPI, Tempo.Ecto.QueryAPI.Composite],
+        Setup: [Tempo.SQL.Migration, Tempo.SQL.PostgresTypes, Tempo.SQL.JSON],
+        Exceptions: [Tempo.SQL.UnsupportedValueError],
+        Internals: [Tempo.SQL.Conversion, Tempo.SQL.Meta]
+      ]
     ]
   end
 
@@ -93,7 +106,6 @@ defmodule Tempo.Sql.MixProject do
 
   defp deps do
     [
-      # Tempo 2.0, built beside it until it is published.
       {:ex_tempo, "~> 2.1"},
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
@@ -101,15 +113,7 @@ defmodule Tempo.Sql.MixProject do
       {:ex_doc, "~> 0.38", only: [:dev, :test, :release], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
-    ] ++ maybe_json_polyfill()
-  end
-
-  defp maybe_json_polyfill do
-    if Code.ensure_loaded?(:json) do
-      []
-    else
-      [{:json_polyfill, "~> 0.2 or ~> 1.0"}]
-    end
+    ]
   end
 
   defp elixirc_paths(:test) do

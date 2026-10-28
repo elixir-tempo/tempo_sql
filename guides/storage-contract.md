@@ -36,22 +36,19 @@ An end written to a date is read through it, as it is said aloud: `~o"2026-06-15
 A minimal setup, three Tempo values, pipeline through the type module:
 
 ```elixir
-year    = ~o"2026"
-meeting = ~o"2026-06-15T09:00/2026-06-15T10:00"
-offset  = ~o"2026-06-15T09:00+02:00/2026-06-15T10:00+02:00"
-
-{:ok, year_range}    = Tempo.Ecto.Interval.dump(year)
-{:ok, meeting_range} = Tempo.Ecto.Interval.dump(meeting)
-{:ok, offset_range}  = Tempo.Ecto.Interval.dump(offset)
-
-Tempo.Ecto.Interval.load(year_range)
-#=> {:ok, ~o"2026-01-01T00:00:00Z/2027-01-01T00:00:00Z"}
-
-Tempo.Ecto.Interval.load(meeting_range)
-#=> {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"}
-
-Tempo.Ecto.Interval.load(offset_range)
-#=> {:ok, ~o"2026-06-15T07:00:00Z/2026-06-15T08:00:00Z"}
+iex> import Tempo.Sigils
+iex> year = ~o"2026"
+iex> meeting = ~o"2026-06-15T09:00/2026-06-15T10:00"
+iex> offset = ~o"2026-06-15T09:00+02:00/2026-06-15T10:00+02:00"
+iex> {:ok, year_range} = Tempo.Ecto.Interval.dump(year)
+iex> {:ok, meeting_range} = Tempo.Ecto.Interval.dump(meeting)
+iex> {:ok, offset_range} = Tempo.Ecto.Interval.dump(offset)
+iex> Tempo.Ecto.Interval.load(year_range)
+{:ok, ~o"2026-01-01T00:00:00Z/2027-01-01T00:00:00Z"}
+iex> Tempo.Ecto.Interval.load(meeting_range)
+{:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"}
+iex> Tempo.Ecto.Interval.load(offset_range)
+{:ok, ~o"2026-06-15T07:00:00Z/2026-06-15T08:00:00Z"}
 ```
 
 > *The year is **stored as the instants that bound it**, and loads back as an interval between them — the "it was just a year" fact is gone. The meeting comes back on the same instants, at UTC. The meeting at `+02:00` comes back as the same instants at UTC, two hours earlier on the clock.*
@@ -68,7 +65,7 @@ That is the whole guide in one paragraph. The rest of this document makes each c
 
 * Open ends. `~o"2026-06-15T09:00/.."` is stored as a range with `upper: :unbound` (SQL `[lower, )`), and loads back with an open end. An open-ended booking like "everything after 9 on the 15th of June" round-trips as it went in.
 
-* For `tstzmultirange`, the order of the spans. Postgres keeps a multirange's overlapping or adjacent ranges as one, so spans that touch come back joined: a recurrence's back-to-back occurrences, `~o"R3/2026-06-15T09:00/PT15M"`, come back as the one span `~o"2026-06-15T09:00:00Z/2026-06-15T09:45:00Z"`.
+* For `tstzmultirange`, the order of the spans. Postgres keeps a multirange's overlapping or adjacent ranges as one, so spans that touch come back joined: a recurrence's back-to-back occurrences, `~o"R3/2026-06-15T09:00/PT15M"`, come back as a set of one span, `~o"{2026-06-15T09:00:00Z/2026-06-15T09:45:00Z}"`.
 
 ## What is lost
 
@@ -96,7 +93,7 @@ The storage contract distinguishes between *dropped* (lost on store) and *reject
 
 * **Several spans in one range** (`:multi_valued_slot`). `Tempo.Ecto.Interval` holds one span. A set, a recurrence, or a value that names several (`~o"2026Y{6,8}M"`, June and August) belongs in a `Tempo.Ecto.IntervalSet` column, one range a span.
 
-* **A recurrence with no end.** `~o"R/2026-06-01/P1W"` has no last span, so no multirange holds it. Bound it with `Tempo.select/3` and a `:within` window, or store it in a composite column.
+* **A recurrence with no end.** `~o"R/2026-06-01/P1W"` has no last span, so no multirange holds it. Bound it to a window with `Tempo.to_interval/2` and `:within`, or store it in a composite column.
 
 * **Qualifications** (`:qualification`). `~o"1984?/2004"` has no Postgres-range analogue — ranges are precise, uncertainty is not. Callers who need to persist uncertainty should store the expression in a composite column, or the qualification in a sibling column.
 
@@ -114,13 +111,15 @@ What looks refusable but is not: an ordinal date (`~o"2026-181"`, the 30th of Ju
 
 The resolution a value is written to is what it means:
 
-```elixir
-~o"2026"                        # the year
-~o"2026-06"                     # the month
-~o"2026-06-15"                  # the day
-~o"2026-06-15T09"               # the hour
-~o"2026-06-15T09:30:00"         # the second
-```
+* `~o"2026"` is the year.
+
+* `~o"2026-06"` is the month.
+
+* `~o"2026-06-15"` is the day.
+
+* `~o"2026-06-15T09"` is the hour.
+
+* `~o"2026-06-15T09:30:00"` is the second.
 
 Each of these is a valid Tempo value and each denotes a *different* span. `~o"2026"` is the whole of 2026; `~o"2026-06-15T09:30:00"` is one second.
 
@@ -151,15 +150,10 @@ end
 
 The option takes a unit: `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`. On load, both ends are written to that unit. An end at a calendar unit is read through it, so the range's upper bound becomes the last year, month or day it holds:
 
-```elixir
-# A column declared `resolution: :year`
-~U[2026-01-01 00:00:00Z] .. ~U[2027-01-01 00:00:00Z]
-#=> ~o"2026YZ/2026YZ"
-
-# A column declared `resolution: :month`
-~U[2026-04-01 00:00:00Z] .. ~U[2026-07-01 00:00:00Z]
-#=> ~o"2026Y4MZ/2026Y6MZ"
-```
+| Column declared | Stored range | Loads as |
+|---|---|---|
+| `resolution: :year` | `[2026-01-01 00:00:00Z, 2027-01-01 00:00:00Z)` | `~o"2026YZ/2026YZ"` |
+| `resolution: :month` | `[2026-04-01 00:00:00Z, 2026-07-01 00:00:00Z)` | `~o"2026Y4MZ/6MZ"` |
 
 > *"Load the range **as the years it holds** — 2026 through 2026." "Load the quarter as the months it holds — April through June."*
 
@@ -235,13 +229,13 @@ CREATE TYPE tempo_multirange AS (
 
 The three fields: `range`/`ranges` holds the queryable span; `resolution` records the column's declared resolution (for documentation); `meta` is a JSON document holding the expression's ISO 8601 text, its metadata, and each member's metadata for a set.
 
-The application's Postgrex needs to know how to encode the `jsonb` column. `tempo_sql` ships a `Tempo.SQL.PostgresTypes` module that configures `:json` (OTP 27+):
+Postgrex encodes the `jsonb` field with the JSON library its types name, Jason unless told otherwise. `tempo_sql` ships `Tempo.SQL.PostgresTypes`, which names `Tempo.SQL.JSON`, a shim over Erlang's built-in `:json`; name it in the repository's configuration:
 
 ```elixir
 config :my_app, MyApp.Repo, types: Tempo.SQL.PostgresTypes
 ```
 
-Alternatively, define your own types module via `Postgrex.Types.define(MyApp.PostgresTypes, [], json: Tempo.SQL.JSON)`.
+An application that needs other Postgrex extensions defines its own types module with the same JSON library: `Postgrex.Types.define(MyApp.PostgresTypes, [MyApp.SomeExtension], json: Tempo.SQL.JSON)`.
 
 ### Schema
 

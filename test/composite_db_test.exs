@@ -63,6 +63,12 @@ defmodule Tempo.SQL.CompositeDBTest do
       assert stored(FidelityMeeting, :window, hebrew, :name, "Nisan") == hebrew
     end
 
+    test "reads back an expression in a named zone" do
+      new_york = ~o"2026-06-15T09:00/2026-06-15T10:00[America/New_York]"
+
+      assert stored(FidelityMeeting, :window, new_york, :name, "New York") == new_york
+    end
+
     test "queries with composite `contains` — the range column stays queryable" do
       Repo.insert!(%FidelityMeeting{
         name: "Morning",

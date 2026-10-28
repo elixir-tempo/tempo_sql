@@ -18,6 +18,18 @@ defmodule Tempo.SQL.DBTest do
       assert fetched.window == ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"
     end
 
+    test "stores a window in a named zone as the instants it is" do
+      Repo.insert!(%Meeting{
+        name: "New York standup",
+        window: ~o"2026-06-15T09:00/2026-06-15T10:00[America/New_York]"
+      })
+
+      [row] = Repo.all(from(m in Meeting, where: m.name == "New York standup"))
+
+      # The zone's name is not stored: the window comes back at UTC.
+      assert row.window == ~o"2026-06-15T13:00:00Z/2026-06-15T14:00:00Z"
+    end
+
     test "stores a window of days as the instants it runs between" do
       Repo.insert!(%Meeting{name: "Offsite", window: ~o"2026-06-15/2026-06-17"})
 

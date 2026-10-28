@@ -14,8 +14,7 @@ config :ex_tempo_sql, Tempo.SQL.Repo,
 
 config :logger, level: :warning
 
-# Postgrex defaults to Jason for jsonb encoding. Tempo SQL uses
-# Erlang's built-in :json module (OTP 27+), so we point Postgrex
-# at it here. Applications depending on tempo_sql need the same
-# configuration in their own config — the README has a note.
-config :postgrex, :json_library, :json
+# A value in a named zone is stored as the UTC instants it is. Tempo 2.1.0
+# converts it to those instants with Elixir's time zone database, so one that
+# knows the zones is configured here, as an application storing them does.
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase

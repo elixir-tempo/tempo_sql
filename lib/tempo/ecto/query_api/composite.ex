@@ -27,11 +27,15 @@ defmodule Tempo.Ecto.QueryAPI.Composite do
 
   Same names and semantics as `Tempo.Ecto.QueryAPI`:
 
-    * `contains/2` — `@>`
-    * `overlaps/2` — `&&`
-    * `meets/2`    — `-|-`
-    * `strictly_before/2` — `<<`
-    * `strictly_after/2`  — `>>`
+    * `contains/2` — `@>`.
+
+    * `overlaps/2` — `&&`.
+
+    * `meets/2` — `-|-`.
+
+    * `strictly_before/2` — `<<`.
+
+    * `strictly_after/2` — `>>`.
 
   """
 

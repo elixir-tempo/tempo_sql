@@ -31,6 +31,9 @@ defmodule Tempo.SQL.Conversion do
   @resolutions [:year, :month, :day, :hour, :minute, :second]
   @clock_resolutions [:hour, :minute, :second]
 
+  @typedoc "A unit a loaded range's ends are written to."
+  @type resolution() :: :year | :month | :day | :hour | :minute | :second
+
   @doc """
   Returns the valid values for the `:resolution` option on the Ecto
   types.
@@ -45,6 +48,7 @@ defmodule Tempo.SQL.Conversion do
       [:year, :month, :day, :hour, :minute, :second]
 
   """
+  @spec valid_resolutions() :: [resolution(), ...]
   def valid_resolutions do
     @resolutions
   end
@@ -174,9 +178,11 @@ defmodule Tempo.SQL.Conversion do
   This loader therefore normalises any non-half-open range to
   `[lower, upper)` by shifting the offending endpoint one second:
 
-    * `[a, b]`  → `[a,         b + 1s)`
-    * `(a, b)`  → `[a + 1s,    b)`
-    * `(a, b]`  → `[a + 1s,    b + 1s)`
+    * `[a, b]` → `[a, b + 1s)`.
+
+    * `(a, b)` → `[a + 1s, b)`.
+
+    * `(a, b]` → `[a + 1s, b + 1s)`.
 
   ### Arguments
 
@@ -263,6 +269,7 @@ defmodule Tempo.SQL.Conversion do
       ** (ArgumentError) expected :resolution to be one of [:year, :month, :day, :hour, :minute, :second], got: :fortnight
 
   """
+  @spec validate_resolution!(term()) :: resolution()
   def validate_resolution!(resolution) when resolution in @resolutions do
     resolution
   end

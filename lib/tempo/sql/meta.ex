@@ -6,8 +6,9 @@ defmodule Tempo.SQL.Meta do
   The range column of a composite carries the queryable span.
   The `meta` column carries everything else Tempo knows that
   `tstzrange` cannot express — qualifications, non-Gregorian
-  calendars, zone identifiers, recurrence rules, interval
-  metadata, and the implicit-vs-explicit-span distinction.
+  calendars, zone identifiers, recurrence rules, metadata, the
+  resolution a value is written to, and whether it was written as a
+  value or as an interval.
 
   On store, the meta is a JSON document with this shape:
 
@@ -81,6 +82,7 @@ defmodule Tempo.SQL.Meta do
       ~s({"ends":null})
 
   """
+  @spec nil_aware_encoder(term(), :json.encoder()) :: iodata()
   def nil_aware_encoder(nil, _encode) do
     "null"
   end
@@ -103,6 +105,7 @@ defmodule Tempo.SQL.Meta do
       %{null: nil}
 
   """
+  @spec decode_options() :: map()
   def decode_options do
     @decode_options
   end
@@ -124,6 +127,7 @@ defmodule Tempo.SQL.Meta do
       ~s({"hours":8})
 
   """
+  @spec encode_json(term()) :: binary()
   def encode_json(term) do
     term
     |> :json.encode(&nil_aware_encoder/2)
@@ -148,6 +152,7 @@ defmodule Tempo.SQL.Meta do
       %{"hours" => 8}
 
   """
+  @spec decode_json(binary()) :: term()
   def decode_json(binary) when is_binary(binary) do
     {decoded, :ok, _rest} = :json.decode(binary, :ok, @decode_options)
     decoded
