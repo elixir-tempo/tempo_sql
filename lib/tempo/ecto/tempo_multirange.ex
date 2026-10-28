@@ -63,7 +63,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def type(_params), do: :tempo_multirange
+    def type(_params) do
+      :tempo_multirange
+    end
 
     @impl Ecto.ParameterizedType
     def init(options) do
@@ -76,7 +78,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def cast(nil, _params), do: {:ok, nil}
+    def cast(nil, _params) do
+      {:ok, nil}
+    end
 
     def cast(%Tempo{} = expression, _params) do
       case Tempo.to_iso8601(expression) do
@@ -92,29 +96,46 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def cast(_, _params), do: :error
+    def cast(_, _params) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-    def load(nil, _loader, _params), do: {:ok, nil}
+
+    def load(nil, _loader, _params) do
+      {:ok, nil}
+    end
 
     def load({%Postgrex.Multirange{} = _multirange, _resolution, meta}, _loader, _params)
-        when not is_nil(meta),
-        do: loaded(Meta.decode_interval(meta))
+        when not is_nil(meta) do
+      loaded(Meta.decode_interval(meta))
+    end
 
     # A composite row with no meta, written by hand, is read from its ranges.
-    def load({%Postgrex.Multirange{ranges: ranges}, _resolution, nil}, _loader, params),
-      do: loaded(from_ranges(ranges, params.resolution))
+    def load({%Postgrex.Multirange{ranges: ranges}, _resolution, nil}, _loader, params) do
+      loaded(from_ranges(ranges, params.resolution))
+    end
 
-    def load(_, _, _), do: :error
+    def load(_, _, _) do
+      :error
+    end
 
     # Ecto takes a value that does not load as `:error`, whatever the reason.
-    defp loaded({:ok, expression}), do: {:ok, expression}
-    defp loaded({:error, _reason}), do: :error
+    defp loaded({:ok, expression}) do
+      {:ok, expression}
+    end
+
+    defp loaded({:error, _reason}) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-    def dump(nil, _, _), do: {:ok, nil}
+
+    def dump(nil, _, _) do
+      {:ok, nil}
+    end
 
     def dump(%Tempo{} = expression, _, params) do
       case composite(expression) do
@@ -123,13 +144,19 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def dump(_, _, _), do: :error
+    def dump(_, _, _) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
-    def equal?(a, b, _params), do: a == b
+    def equal?(a, b, _params) do
+      a == b
+    end
 
     @impl Ecto.ParameterizedType
-    def embed_as(_format, _params), do: :self
+    def embed_as(_format, _params) do
+      :self
+    end
 
     # The ranges of the intervals an expression covers, none empty, and its meta.
     defp composite(expression) do
@@ -141,10 +168,21 @@ if Code.ensure_loaded?(Ecto.Type) do
       |> non_empty()
     end
 
-    defp non_empty({:ok, []}), do: {:error, :empty_set}
-    defp non_empty({:ok, _} = composite), do: composite
-    defp non_empty({:error, _} = error), do: error
-    defp non_empty(_no_intervals), do: {:error, :empty_set}
+    defp non_empty({:ok, []}) do
+      {:error, :empty_set}
+    end
+
+    defp non_empty({:ok, _} = composite) do
+      composite
+    end
+
+    defp non_empty({:error, _} = error) do
+      error
+    end
+
+    defp non_empty(_no_intervals) do
+      {:error, :empty_set}
+    end
 
     defp from_ranges(ranges, resolution) do
       with {:ok, intervals} <-

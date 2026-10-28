@@ -69,7 +69,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def type(_params), do: :tstzrange
+    def type(_params) do
+      :tstzrange
+    end
 
     @impl Ecto.ParameterizedType
     def init(options) do
@@ -82,20 +84,28 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def cast(value, params), do: IntervalType.cast(value, params)
+    def cast(value, params) do
+      IntervalType.cast(value, params)
+    end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second}),
-      do: IntervalType.load(value, loader, params)
+    def load(value, loader \\ nil, params \\ %{resolution: :second}) do
+      IntervalType.load(value, loader, params)
+    end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second}),
-      do: IntervalType.dump(value, dumper, params)
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second}) do
+      IntervalType.dump(value, dumper, params)
+    end
 
     @impl Ecto.ParameterizedType
-    def equal?(a, b, _params), do: a == b
+    def equal?(a, b, _params) do
+      a == b
+    end
 
     @impl Ecto.ParameterizedType
-    def embed_as(_format, _params), do: :self
+    def embed_as(_format, _params) do
+      :self
+    end
   end
 end

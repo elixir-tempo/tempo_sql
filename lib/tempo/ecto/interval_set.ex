@@ -79,7 +79,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def type(_params), do: :tstzmultirange
+    def type(_params) do
+      :tstzmultirange
+    end
 
     @impl Ecto.ParameterizedType
     def init(options) do
@@ -92,7 +94,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def cast(nil, _params), do: {:ok, nil}
+    def cast(nil, _params) do
+      {:ok, nil}
+    end
 
     def cast(%Tempo{} = expression, _params) do
       case Conversion.intervals(expression) do
@@ -115,11 +119,16 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def cast(_, _params), do: :error
+    def cast(_, _params) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-    def load(nil, _loader, _params), do: {:ok, nil}
+
+    def load(nil, _loader, _params) do
+      {:ok, nil}
+    end
 
     def load(%Postgrex.Multirange{} = multirange, _loader, params) do
       case multirange_to_set(multirange, params.resolution) do
@@ -128,11 +137,16 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def load(_, _, _), do: :error
+    def load(_, _, _) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-    def dump(nil, _, _), do: {:ok, nil}
+
+    def dump(nil, _, _) do
+      {:ok, nil}
+    end
 
     def dump(%Tempo{} = expression, _, _) do
       case Conversion.intervals(expression) do
@@ -141,15 +155,23 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def dump(_, _, _), do: :error
+    def dump(_, _, _) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
-    def equal?(a, b, _params), do: a == b
+    def equal?(a, b, _params) do
+      a == b
+    end
 
     @impl Ecto.ParameterizedType
-    def embed_as(_format, _params), do: :self
+    def embed_as(_format, _params) do
+      :self
+    end
 
-    defp dump_members([], acc), do: {:ok, %Postgrex.Multirange{ranges: Enum.reverse(acc)}}
+    defp dump_members([], acc) do
+      {:ok, %Postgrex.Multirange{ranges: Enum.reverse(acc)}}
+    end
 
     defp dump_members([interval | rest], acc) do
       case Conversion.interval_to_range(interval) do
@@ -169,7 +191,12 @@ if Code.ensure_loaded?(Ecto.Type) do
       |> in_order()
     end
 
-    defp in_order({:ok, intervals}), do: IntervalSet.new(Enum.reverse(intervals))
-    defp in_order(error), do: error
+    defp in_order({:ok, intervals}) do
+      IntervalSet.new(Enum.reverse(intervals))
+    end
+
+    defp in_order(error) do
+      error
+    end
   end
 end

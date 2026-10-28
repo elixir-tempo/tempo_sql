@@ -45,7 +45,9 @@ defmodule Tempo.SQL.Conversion do
       [:year, :month, :day, :hour, :minute, :second]
 
   """
-  def valid_resolutions, do: @resolutions
+  def valid_resolutions do
+    @resolutions
+  end
 
   @doc """
   Converts an interval into a `%Postgrex.Range{}` with `DateTime`
@@ -261,7 +263,9 @@ defmodule Tempo.SQL.Conversion do
       ** (ArgumentError) expected :resolution to be one of [:year, :month, :day, :hour, :minute, :second], got: :fortnight
 
   """
-  def validate_resolution!(resolution) when resolution in @resolutions, do: resolution
+  def validate_resolution!(resolution) when resolution in @resolutions do
+    resolution
+  end
 
   def validate_resolution!(other) do
     raise ArgumentError,
@@ -327,7 +331,9 @@ defmodule Tempo.SQL.Conversion do
 
   """
   @spec as_interval(Tempo.t()) :: {:ok, Tempo.t()} | {:error, UnsupportedValueError.t()}
-  def as_interval(%Tempo{} = expression), do: one_span(expression)
+  def as_interval(%Tempo{} = expression) do
+    one_span(expression)
+  end
 
   @doc """
   The intervals an expression covers, each a span, in order.
@@ -369,8 +375,13 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  defp only_span([span], _expression), do: {:ok, span}
-  defp only_span(_several, expression), do: {:error, unsupported(:multi_valued_slot, expression)}
+  defp only_span([span], _expression) do
+    {:ok, span}
+  end
+
+  defp only_span(_several, expression) do
+    {:error, unsupported(:multi_valued_slot, expression)}
+  end
 
   defp span_instants(span, original) do
     case Interval.instants(span) do
@@ -434,11 +445,19 @@ defmodule Tempo.SQL.Conversion do
 
   # The first of instants, or none where one of them is open.
   defp earliest(instants) do
-    if nil in instants, do: nil, else: Enum.min_by(instants, &utc_ticks/1, fn -> nil end)
+    if nil in instants do
+      nil
+    else
+      Enum.min_by(instants, &utc_ticks/1, fn -> nil end)
+    end
   end
 
   defp latest(instants) do
-    if nil in instants, do: nil, else: Enum.max_by(instants, &utc_ticks/1, fn -> nil end)
+    if nil in instants do
+      nil
+    else
+      Enum.max_by(instants, &utc_ticks/1, fn -> nil end)
+    end
   end
 
   defp utc_ticks(instant) do
@@ -448,7 +467,9 @@ defmodule Tempo.SQL.Conversion do
 
   # An instant with no zone is stored as though at UTC; one of another
   # calendar is stored as the Gregorian instant it is.
-  defp utc(nil), do: {:ok, :unbound}
+  defp utc(nil) do
+    {:ok, :unbound}
+  end
 
   defp utc(%NaiveDateTime{} = naive) do
     with {:ok, iso} <- NaiveDateTime.convert(naive, Calendar.ISO),
@@ -460,8 +481,9 @@ defmodule Tempo.SQL.Conversion do
          do: DateTime.shift_zone(iso, "Etc/UTC")
   end
 
-  defp half_open(lower, upper),
-    do: %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
+  defp half_open(lower, upper) do
+    %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
+  end
 
   # ------------------------------------------------------------------
   # Shape validation
@@ -486,8 +508,8 @@ defmodule Tempo.SQL.Conversion do
   defp qualified?(%Tempo{} = span) do
     {from, to} = Interval.endpoints(span)
 
-    Tempo.qualification(span) != nil or
-      Enum.any?([from, to], &(match?(%Tempo{}, &1) and Tempo.qualification(&1) != nil))
+    not is_nil(Tempo.qualification(span)) or
+      Enum.any?([from, to], &(match?(%Tempo{}, &1) and not is_nil(Tempo.qualification(&1))))
   end
 
   defp bounded_somewhere(interval, nil, nil) do
@@ -499,10 +521,16 @@ defmodule Tempo.SQL.Conversion do
      )}
   end
 
-  defp bounded_somewhere(_interval, _from, _to), do: :ok
+  defp bounded_somewhere(_interval, _from, _to) do
+    :ok
+  end
 
   defp unsupported(reason, value, cause \\ nil) do
-    message = if cause, do: Exception.message(cause)
+    message =
+      if cause do
+        Exception.message(cause)
+      end
+
     UnsupportedValueError.exception(reason: reason, value: value, message: message)
   end
 
@@ -510,22 +538,42 @@ defmodule Tempo.SQL.Conversion do
   # Range bounds → interval ends
   # ------------------------------------------------------------------
 
-  defp shift_lower_to_inclusive(bound, _inclusive) when bound in [:unbound, nil], do: :unbound
-  defp shift_lower_to_inclusive(value, true), do: value
-  defp shift_lower_to_inclusive(%DateTime{} = dt, false), do: DateTime.add(dt, 1, :second)
+  defp shift_lower_to_inclusive(bound, _inclusive) when bound in [:unbound, nil] do
+    :unbound
+  end
 
-  defp shift_lower_to_inclusive(%NaiveDateTime{} = ndt, false),
-    do: NaiveDateTime.add(ndt, 1, :second)
+  defp shift_lower_to_inclusive(value, true) do
+    value
+  end
 
-  defp shift_upper_to_exclusive(bound, _inclusive) when bound in [:unbound, nil], do: :unbound
-  defp shift_upper_to_exclusive(value, false), do: value
-  defp shift_upper_to_exclusive(%DateTime{} = dt, true), do: DateTime.add(dt, 1, :second)
+  defp shift_lower_to_inclusive(%DateTime{} = dt, false) do
+    DateTime.add(dt, 1, :second)
+  end
 
-  defp shift_upper_to_exclusive(%NaiveDateTime{} = ndt, true),
-    do: NaiveDateTime.add(ndt, 1, :second)
+  defp shift_lower_to_inclusive(%NaiveDateTime{} = ndt, false) do
+    NaiveDateTime.add(ndt, 1, :second)
+  end
+
+  defp shift_upper_to_exclusive(bound, _inclusive) when bound in [:unbound, nil] do
+    :unbound
+  end
+
+  defp shift_upper_to_exclusive(value, false) do
+    value
+  end
+
+  defp shift_upper_to_exclusive(%DateTime{} = dt, true) do
+    DateTime.add(dt, 1, :second)
+  end
+
+  defp shift_upper_to_exclusive(%NaiveDateTime{} = ndt, true) do
+    NaiveDateTime.add(ndt, 1, :second)
+  end
 
   # The value a lower bound begins, truncated to the resolution.
-  defp lower_end(:unbound, _resolution), do: {:ok, :open}
+  defp lower_end(:unbound, _resolution) do
+    {:ok, :open}
+  end
 
   defp lower_end(bound, resolution) do
     with {:ok, value} <- bound_value(bound), do: Tempo.trunc(value, resolution)
@@ -534,7 +582,9 @@ defmodule Tempo.SQL.Conversion do
   # The end an upper bound makes: at a clock resolution the bound itself,
   # where the interval ends; at a date resolution the last date before it,
   # which the interval runs through.
-  defp upper_end(:unbound, _resolution), do: {:ok, :open}
+  defp upper_end(:unbound, _resolution) do
+    {:ok, :open}
+  end
 
   defp upper_end(bound, resolution) when resolution in @clock_resolutions do
     with {:ok, value} <- bound_value(bound), do: Tempo.trunc(value, resolution)
@@ -548,11 +598,17 @@ defmodule Tempo.SQL.Conversion do
 
   # A bound of whole seconds is read as a second, one with a fraction keeps it.
   defp bound_value(%{microsecond: {0, _precision}} = instant)
-       when is_struct(instant, DateTime) or is_struct(instant, NaiveDateTime),
-       do: Tempo.from_elixir(%{instant | microsecond: {0, 0}})
+       when is_struct(instant, DateTime) or is_struct(instant, NaiveDateTime) do
+    Tempo.from_elixir(%{instant | microsecond: {0, 0}})
+  end
 
-  defp bound_value(%DateTime{} = datetime), do: Tempo.from_elixir(datetime)
-  defp bound_value(%NaiveDateTime{} = naive), do: Tempo.from_elixir(naive)
+  defp bound_value(%DateTime{} = datetime) do
+    Tempo.from_elixir(datetime)
+  end
+
+  defp bound_value(%NaiveDateTime{} = naive) do
+    Tempo.from_elixir(naive)
+  end
 
   defp bound_value(other) do
     {:error,

@@ -122,8 +122,13 @@ defmodule Tempo.SQL.Migration do
         use Ecto.Migration
         import Tempo.SQL.Migration
 
-        def up,   do: create_tempo_types()
-        def down, do: drop_tempo_types()
+        def up do
+          create_tempo_types()
+        end
+
+        def down do
+          drop_tempo_types()
+        end
       end
 
   Creates two PostgreSQL composite types:
@@ -198,8 +203,13 @@ defmodule Tempo.SQL.Migration do
 
   ### Examples
 
-      def up,   do: create_tempo_types()
-      def down, do: drop_tempo_types()
+      def up do
+        create_tempo_types()
+      end
+
+      def down do
+        drop_tempo_types()
+      end
 
   """
   def drop_tempo_types do

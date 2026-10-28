@@ -18,8 +18,13 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
 
   @second %{resolution: :second}
 
-  defp morning, do: ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
-  defp afternoon, do: ~o"2027-06-15T14:00:00/2027-06-15T15:00:00"
+  defp morning do
+    ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
+  end
+
+  defp afternoon do
+    ~o"2027-06-15T14:00:00/2027-06-15T15:00:00"
+  end
 
   defp range do
     {:ok, range} = IntervalType.dump(morning(), nil, @second)

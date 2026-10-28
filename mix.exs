@@ -112,7 +112,15 @@ defmodule Tempo.Sql.MixProject do
     end
   end
 
-  defp elixirc_paths(:test), do: ["lib", "mix", "test/support"]
-  defp elixirc_paths(:dev), do: ["lib", "mix"]
-  defp elixirc_paths(_), do: ["lib"]
+  defp elixirc_paths(:test) do
+    ["lib", "mix", "test/support"]
+  end
+
+  defp elixirc_paths(:dev) do
+    ["lib", "mix"]
+  end
+
+  defp elixirc_paths(_) do
+    ["lib"]
+  end
 end

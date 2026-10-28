@@ -38,7 +38,11 @@ defmodule Tempo.SQL.QueryAPITest do
     })
   end
 
-  defp names(query), do: query |> Repo.all() |> Enum.sort()
+  defp names(query) do
+    query
+    |> Repo.all()
+    |> Enum.sort()
+  end
 
   describe "meets/2" do
     setup do

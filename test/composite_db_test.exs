@@ -8,7 +8,10 @@ defmodule Tempo.SQL.CompositeDBTest do
 
   defp stored(schema, field, value, name_field, name) do
     row = Repo.insert!(struct(schema, [{name_field, name}, {field, value}]))
-    schema |> Repo.get!(row.id) |> Map.fetch!(field)
+
+    schema
+    |> Repo.get!(row.id)
+    |> Map.fetch!(field)
   end
 
   describe "Tempo.Ecto.TempoRange end-to-end" do

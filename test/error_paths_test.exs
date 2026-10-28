@@ -22,20 +22,28 @@ defmodule Tempo.SQL.ErrorPathsTest do
 
   @second %{resolution: :second}
 
-  defp interval, do: ~o"2027-06-15T09:00/2027-06-15T10:00"
+  defp interval do
+    ~o"2027-06-15T09:00/2027-06-15T10:00"
+  end
 
   # A time of day with no date has no place on the time line, so no range
   # can be built from it.
-  defp unpositioned, do: ~o"T09/T10"
+  defp unpositioned do
+    ~o"T09/T10"
+  end
 
   defp bad_range do
     %Postgrex.Range{lower: :bogus, upper: :bogus, lower_inclusive: true, upper_inclusive: false}
   end
 
-  defp bad_multirange, do: %Postgrex.Multirange{ranges: [bad_range()]}
+  defp bad_multirange do
+    %Postgrex.Multirange{ranges: [bad_range()]}
+  end
 
   # Two disjoint years — a set, not a single span.
-  defp disjoint, do: ~o"{2027,2029}Y"
+  defp disjoint do
+    ~o"{2027,2029}Y"
+  end
 
   describe "the default-argument forms" do
     test "load/1 uses second resolution" do

@@ -7,8 +7,9 @@ defmodule Tempo.Ecto.IntervalSetTest do
 
   @default_params %{resolution: :second}
 
-  defp half_open(lower, upper),
-    do: %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
+  defp half_open(lower, upper) do
+    %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
+  end
 
   defp meetings do
     Tempo.IntervalSet.new!([

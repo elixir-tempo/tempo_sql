@@ -35,7 +35,8 @@ defmodule Tempo.SQL.DBTest do
     end
 
     test "stores an open-start window as a range unbounded on the left" do
-      %Meeting{name: "Deadline", window: ~o"../2026-06-15T17:00:00"} |> Repo.insert!()
+      %Meeting{name: "Deadline", window: ~o"../2026-06-15T17:00:00"}
+      |> Repo.insert!()
 
       [row] = Repo.all(from(m in Meeting, where: m.name == "Deadline"))
       assert row.window == ~o"../2026-06-15T17:00:00Z"

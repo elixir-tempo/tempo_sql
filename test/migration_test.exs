@@ -29,7 +29,9 @@ defmodule Tempo.SQL.MigrationTest do
     :ok
   end
 
-  defp unboxed(fun), do: fun.()
+  defp unboxed(fun) do
+    fun.()
+  end
 
   defp drop_all do
     for table <- ~w(migration_probe migration_probe_composite) do
@@ -188,7 +190,8 @@ defmodule Tempo.SQL.MigrationTest do
             []
           )
 
-        assert List.flatten(rows) |> Enum.sort() == ["tempo_multirange", "tempo_range"]
+        assert List.flatten(rows)
+               |> Enum.sort() == ["tempo_multirange", "tempo_range"]
       end)
     end
   end
@@ -251,6 +254,6 @@ defmodule Tempo.SQL.MigrationTest do
     {:ok, %{rows: rows}} =
       SQL.query(Repo, "SELECT 1 FROM pg_type WHERE typname = $1", [name])
 
-    rows != []
+    match?([_ | _], rows)
   end
 end

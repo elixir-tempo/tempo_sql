@@ -81,8 +81,13 @@ defmodule Tempo.SQL.Meta do
       ~s({"ends":null})
 
   """
-  def nil_aware_encoder(nil, _encode), do: "null"
-  def nil_aware_encoder(value, encode), do: :json.encode_value(value, encode)
+  def nil_aware_encoder(nil, _encode) do
+    "null"
+  end
+
+  def nil_aware_encoder(value, encode) do
+    :json.encode_value(value, encode)
+  end
 
   @doc """
   Returns the decoder options for `:json.decode/3` that map JSON null
@@ -98,7 +103,9 @@ defmodule Tempo.SQL.Meta do
       %{null: nil}
 
   """
-  def decode_options, do: @decode_options
+  def decode_options do
+    @decode_options
+  end
 
   @doc """
   Encodes an arbitrary term as a nil-aware JSON binary.
@@ -118,7 +125,9 @@ defmodule Tempo.SQL.Meta do
 
   """
   def encode_json(term) do
-    term |> :json.encode(&nil_aware_encoder/2) |> IO.iodata_to_binary()
+    term
+    |> :json.encode(&nil_aware_encoder/2)
+    |> IO.iodata_to_binary()
   end
 
   @doc """
@@ -166,7 +175,10 @@ defmodule Tempo.SQL.Meta do
   ### Examples
 
       iex> {:ok, json} = Tempo.SQL.Meta.encode_interval(~o"2027-06-15/2027-06-16")
-      iex> json |> IO.iodata_to_binary() |> Tempo.SQL.Meta.decode_json() |> Map.get("expression")
+      iex> json
+      ...> |> IO.iodata_to_binary()
+      ...> |> Tempo.SQL.Meta.decode_json()
+      ...> |> Map.get("expression")
       "2027Y6M15D/16D"
 
   """
@@ -248,10 +260,13 @@ defmodule Tempo.SQL.Meta do
   end
 
   # Versions 1 and 2 wrote both ends of every interval, `null` where it had none.
-  def decode_interval(%{"from" => _from, "to" => _to} = map),
-    do: decode_written_by_1x(map, Map.get(map, "v", 1))
+  def decode_interval(%{"from" => _from, "to" => _to} = map) do
+    decode_written_by_1x(map, Map.get(map, "v", 1))
+  end
 
-  def decode_interval(%{} = map), do: {:error, {:invalid_meta_shape, map}}
+  def decode_interval(%{} = map) do
+    {:error, {:invalid_meta_shape, map}}
+  end
 
   defp read(text) do
     case Tempo.from_iso8601(text) do
@@ -261,7 +276,9 @@ defmodule Tempo.SQL.Meta do
     end
   end
 
-  defp with_members_metadata(expression, nil), do: {:ok, expression}
+  defp with_members_metadata(expression, nil) do
+    {:ok, expression}
+  end
 
   defp with_members_metadata(expression, metadata) when is_list(metadata) do
     members = IntervalSet.members(expression)
@@ -309,45 +326,95 @@ defmodule Tempo.SQL.Meta do
          do: Tempo.every(cadence, every_options([from: from], recurrence, rule))
   end
 
-  defp built(from, to, recurrence, _duration, _rule),
-    do: {:error, {:unsupported_recurrence, %{from: from, to: to, recurrence: recurrence}}}
+  defp built(from, to, recurrence, _duration, _rule) do
+    {:error, {:unsupported_recurrence, %{from: from, to: to, recurrence: recurrence}}}
+  end
 
   defp every_options(options, recurrence, rule) do
     options
-    |> then(&if(is_integer(recurrence), do: Keyword.put(&1, :count, recurrence), else: &1))
-    |> then(&if(rule, do: Keyword.put(&1, :select, rule), else: &1))
+    |> then(
+      &if is_integer(recurrence) do
+        Keyword.put(&1, :count, recurrence)
+      else
+        &1
+      end
+    )
+    |> then(
+      &if rule do
+        Keyword.put(&1, :select, rule)
+      else
+        &1
+      end
+    )
   end
 
-  defp cadence(_from, _to, %Tempo.Duration{} = duration), do: {:ok, duration}
-  defp cadence(from, %Tempo{} = to, nil), do: Tempo.duration(from, to)
-  defp cadence(from, to, nil), do: {:error, {:unsupported_recurrence, %{from: from, to: to}}}
+  defp cadence(_from, _to, %Tempo.Duration{} = duration) do
+    {:ok, duration}
+  end
+
+  defp cadence(from, %Tempo{} = to, nil) do
+    Tempo.duration(from, to)
+  end
+
+  defp cadence(from, to, nil) do
+    {:error, {:unsupported_recurrence, %{from: from, to: to}}}
+  end
 
   # Tempo 1.x read an end as the instant it stops before: an end written
   # to a calendar unit is, in 2.0's reading, the unit before it; an end on
   # the clock is a boundary either way.
-  defp through(:open, _duration), do: {:ok, :open}
-  defp through(nil, %Tempo.Duration{} = duration), do: {:ok, duration}
-  defp through(nil, nil), do: {:ok, :open}
-  defp through(%Tempo.Duration{} = duration, _duration), do: {:ok, duration}
+  defp through(:open, _duration) do
+    {:ok, :open}
+  end
+
+  defp through(nil, %Tempo.Duration{} = duration) do
+    {:ok, duration}
+  end
+
+  defp through(nil, nil) do
+    {:ok, :open}
+  end
+
+  defp through(%Tempo.Duration{} = duration, _duration) do
+    {:ok, duration}
+  end
 
   defp through(%Tempo{} = to, _duration) do
-    case unit_before(Tempo.resolution(to)) do
-      nil -> {:ok, to}
-      step -> Tempo.shift(to, step)
+    step = unit_before(Tempo.resolution(to))
+
+    if is_nil(step) do
+      {:ok, to}
+    else
+      Tempo.shift(to, step)
     end
   end
 
-  defp unit_before(unit) when unit in [:year, :month, :week], do: [{unit, -1}]
-  defp unit_before(unit) when unit in [:day, :day_of_week, :day_of_year], do: [day: -1]
-  defp unit_before(_clock_or_other), do: nil
+  defp unit_before(unit) when unit in [:year, :month, :week] do
+    [{unit, -1}]
+  end
 
-  defp decode_endpoint("..", _version), do: {:ok, :open}
+  defp unit_before(unit) when unit in [:day, :day_of_week, :day_of_year] do
+    [day: -1]
+  end
+
+  defp unit_before(_clock_or_other) do
+    nil
+  end
+
+  defp decode_endpoint("..", _version) do
+    {:ok, :open}
+  end
 
   # Version 1 could not distinguish "open-ended" from "absent", and
   # read back as open-ended. Version 2 rows say `..` when they mean
   # open-ended, so a null there is an absent endpoint.
-  defp decode_endpoint(nil, 1), do: {:ok, :open}
-  defp decode_endpoint(nil, _version), do: {:ok, nil}
+  defp decode_endpoint(nil, 1) do
+    {:ok, :open}
+  end
+
+  defp decode_endpoint(nil, _version) do
+    {:ok, nil}
+  end
 
   defp decode_endpoint(string, _version) when is_binary(string) do
     case Tempo.from_iso8601(string) do
@@ -357,17 +424,32 @@ defmodule Tempo.SQL.Meta do
     end
   end
 
-  defp decode_recurrence(n) when is_integer(n) and n > 0, do: {:ok, n}
-  defp decode_recurrence("infinity"), do: {:ok, :infinity}
-  defp decode_recurrence(other), do: {:error, {:invalid_recurrence, other}}
+  defp decode_recurrence(n) when is_integer(n) and n > 0 do
+    {:ok, n}
+  end
+
+  defp decode_recurrence("infinity") do
+    {:ok, :infinity}
+  end
+
+  defp decode_recurrence(other) do
+    {:error, {:invalid_recurrence, other}}
+  end
 
   # Tempo 1.x wrote a direction on every interval. A recurrence counted
   # back was written with an open start and its end, which `built/5`
   # reads; the direction itself changes no span.
-  defp decode_direction(direction) when direction in [1, -1], do: {:ok, direction}
-  defp decode_direction(other), do: {:error, {:invalid_direction, other}}
+  defp decode_direction(direction) when direction in [1, -1] do
+    {:ok, direction}
+  end
 
-  defp decode_duration(nil), do: {:ok, nil}
+  defp decode_direction(other) do
+    {:error, {:invalid_direction, other}}
+  end
+
+  defp decode_duration(nil) do
+    {:ok, nil}
+  end
 
   defp decode_duration(string) when is_binary(string) do
     case Tempo.from_iso8601(string) do
@@ -377,7 +459,9 @@ defmodule Tempo.SQL.Meta do
     end
   end
 
-  defp decode_repeat_rule(nil), do: {:ok, nil}
+  defp decode_repeat_rule(nil) do
+    {:ok, nil}
+  end
 
   defp decode_repeat_rule(string) when is_binary(string) do
     case Tempo.from_iso8601(string) do

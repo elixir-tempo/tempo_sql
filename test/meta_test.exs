@@ -9,13 +9,21 @@ defmodule Tempo.SQL.MetaTest do
 
   defp round_trip(expression) do
     {:ok, json} = Meta.encode_interval(expression)
-    {:ok, loaded} = json |> IO.iodata_to_binary() |> Meta.decode_interval()
+
+    {:ok, loaded} =
+      json
+      |> IO.iodata_to_binary()
+      |> Meta.decode_interval()
+
     loaded
   end
 
   defp document(expression) do
     {:ok, json} = Meta.encode_interval(expression)
-    json |> IO.iodata_to_binary() |> Meta.decode_json()
+
+    json
+    |> IO.iodata_to_binary()
+    |> Meta.decode_json()
   end
 
   describe "encode/decode round-trip — the shapes the plain-range types reject" do

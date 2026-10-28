@@ -207,8 +207,13 @@ defmodule MyApp.Repo.Migrations.CreateTempoTypes do
   use Ecto.Migration
   import Tempo.SQL.Migration
 
-  def up,   do: create_tempo_types()
-  def down, do: drop_tempo_types()
+  def up do
+    create_tempo_types()
+  end
+
+  def down do
+    drop_tempo_types()
+  end
 end
 ```
 

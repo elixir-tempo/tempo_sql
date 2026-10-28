@@ -20,7 +20,9 @@ defmodule Tempo.SQL.EctoTypesTest do
 
   @second %{resolution: :second}
 
-  defp interval, do: ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
+  defp interval do
+    ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
+  end
 
   defp interval_set do
     Tempo.IntervalSet.new!([interval()])

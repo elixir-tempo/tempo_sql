@@ -97,7 +97,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def type(_params), do: :tstzrange
+    def type(_params) do
+      :tstzrange
+    end
 
     @impl Ecto.ParameterizedType
     def init(options) do
@@ -110,7 +112,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def cast(nil, _params), do: {:ok, nil}
+    def cast(nil, _params) do
+      {:ok, nil}
+    end
 
     def cast(%Tempo{} = expression, _params) do
       case Conversion.as_interval(expression) do
@@ -126,11 +130,16 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def cast(_, _params), do: :error
+    def cast(_, _params) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def load(value, loader \\ nil, params \\ %{resolution: :second})
-    def load(nil, _loader, _params), do: {:ok, nil}
+
+    def load(nil, _loader, _params) do
+      {:ok, nil}
+    end
 
     def load(%Postgrex.Range{} = range, _loader, params) do
       case Conversion.range_to_interval(range, resolution: params.resolution) do
@@ -139,11 +148,16 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def load(_, _, _), do: :error
+    def load(_, _, _) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
     def dump(value, dumper \\ nil, params \\ %{resolution: :second})
-    def dump(nil, _, _), do: {:ok, nil}
+
+    def dump(nil, _, _) do
+      {:ok, nil}
+    end
 
     def dump(%Tempo{} = expression, _, _) do
       case Conversion.interval_to_range(expression) do
@@ -152,12 +166,18 @@ if Code.ensure_loaded?(Ecto.Type) do
       end
     end
 
-    def dump(_, _, _), do: :error
+    def dump(_, _, _) do
+      :error
+    end
 
     @impl Ecto.ParameterizedType
-    def equal?(a, b, _params), do: a == b
+    def equal?(a, b, _params) do
+      a == b
+    end
 
     @impl Ecto.ParameterizedType
-    def embed_as(_format, _params), do: :self
+    def embed_as(_format, _params) do
+      :self
+    end
   end
 end
