@@ -11,3 +11,6 @@ erl_crash.dump
 .DS_Store
 mise.toml
 .tool-versions
+
+# Session context written by Claude; personal, never committed.
+CLAUDE.local.md

@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Cache JPL ephemeris
         id: cache-ephemeris
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/astro
           key: astro-ephemeris-de440s
@@ -85,31 +85,31 @@ jobs:
         # floor is inherited here. OTP 27 is the minimum.
         include:
           # Elixir 1.17 — on OTP 27
-          - elixir: "1.17-otp-27"
-            otp: "27"
+          - elixir: "1.17.3-otp-27"
+            otp: "27.3.4.19"
 
           # Elixir 1.18 — on OTP 27
-          - elixir: "1.18-otp-27"
-            otp: "27"
+          - elixir: "1.18.5-otp-27"
+            otp: "27.3.4.19"
 
           # Elixir 1.19 — on OTP 27–28
-          - elixir: "1.19-otp-27"
-            otp: "27"
-          - elixir: "1.19-otp-28"
-            otp: "28"
+          - elixir: "1.19.6-otp-27"
+            otp: "27.3.4.19"
+          - elixir: "1.19.6-otp-28"
+            otp: "28.5.0.8"
 
           # Elixir 1.20 — supports OTP 27–29
-          - elixir: "1.20.2-otp-27"
-            otp: "27"
-          - elixir: "1.20.2-otp-28"
-            otp: "28"
-          - elixir: "1.20.2-otp-29"
-            otp: "29"
+          - elixir: "1.20.4-otp-27"
+            otp: "27.3.4.19"
+          - elixir: "1.20.4-otp-28"
+            otp: "28.5.0.8"
+          - elixir: "1.20.4-otp-29"
+            otp: "29.1.2"
             lint: true
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -118,7 +118,7 @@ jobs:
           otp-version: ${{ matrix.otp }}
 
       - name: Restore dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # `_build/dev/dialyxir_*` is excluded because the PLT has its own
           # cache step later in the job. Without the exclusion it is stored
@@ -138,7 +138,7 @@ jobs:
       # resolver reads it from `:filename.basedir(:user_cache, "astro")`
       # (~/.cache/astro on Linux), so compile finds it with no extra config.
       - name: Restore JPL ephemeris
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/astro
           key: astro-ephemeris-de440s
@@ -160,7 +160,7 @@ jobs:
 
       - name: Restore PLT cache
         if: matrix.lint
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: _build/dev/dialyxir_*
           key: plt-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
@@ -172,3 +172,9 @@ jobs:
         env:
           MIX_ENV: dev
         run: mix dialyzer
+
+      - name: Check docs
+        if: matrix.lint
+        env:
+          MIX_ENV: release
+        run: mix docs --warnings-as-errors

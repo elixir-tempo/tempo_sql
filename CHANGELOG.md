@@ -6,7 +6,7 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 ### Changed
 
-* Requires `ex_tempo ~> 2.0`. Every type takes and returns a `t:Tempo.t/0` expression; `%Tempo.Interval{}` and `%Tempo.IntervalSet{}` are no more.
+* Requires `ex_tempo ~> 2.1`. Every type takes and returns a `t:Tempo.t/0` expression; `%Tempo.Interval{}` and `%Tempo.IntervalSet{}` are no more.
 * An end written to a date is read through it, as Tempo 2.0 reads it: `~o"2026-06-15/2026-06-20"` is stored as `[2026-06-15, 2026-06-21)`.
 * `Tempo.Ecto.Interval` takes any expression of one span, and `Tempo.Ecto.IntervalSet` any expression with a last span, a bounded recurrence or a value that names several among them.
 * `Tempo.Ecto.Tempo` is `Tempo.Ecto.Interval` under its old name.

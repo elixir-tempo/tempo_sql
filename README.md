@@ -13,7 +13,7 @@ Add `ex_tempo_sql` to your deps:
 ```elixir
 def deps do
   [
-    {:ex_tempo, "~> 2.0"},
+    {:ex_tempo, "~> 2.1"},
     {:ex_tempo_sql, "~> 0.3"},
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.19"}

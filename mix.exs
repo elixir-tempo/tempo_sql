@@ -94,7 +94,7 @@ defmodule Tempo.Sql.MixProject do
   defp deps do
     [
       # Tempo 2.0, built beside it until it is published.
-      {:ex_tempo, github: "elixir-tempo/tempo", branch: "main"},
+      {:ex_tempo, "~> 2.1"},
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.19"},
