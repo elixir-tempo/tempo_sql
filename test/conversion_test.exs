@@ -80,6 +80,20 @@ defmodule Tempo.SQL.ConversionTest do
 
       assert {range.lower, range.upper} == {~U[2027-06-15 00:00:00Z], :unbound}
     end
+
+    test "a set runs from the member that starts first at UTC, whatever its time shift" do
+      # Nine in the morning at +10:00 is eleven the night before at UTC.
+      set = ~o"{2027-06-15T09:00+10:00,2027-06-15T02:00Z}"
+      assert {:ok, range} = Conversion.interval_to_queryable_range(set)
+
+      assert {range.lower, range.upper} == {~U[2027-06-14 23:00:00Z], ~U[2027-06-15 02:01:00Z]}
+    end
+
+    test "a set with a member open at its end is unbounded above" do
+      assert {:ok, range} = Conversion.interval_to_queryable_range(~o"{2027-06-15/..,2027-06-01}")
+
+      assert {range.lower, range.upper} == {~U[2027-06-01 00:00:00Z], :unbound}
+    end
   end
 
   describe "range_to_interval/2 normalises whatever Postgres returns" do

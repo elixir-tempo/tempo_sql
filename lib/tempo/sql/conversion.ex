@@ -100,9 +100,9 @@ defmodule Tempo.SQL.Conversion do
     with {:ok, span} <- one_span(interval),
          :ok <- plain(span),
          {:ok, {from, to}} <- span_instants(span, interval),
-         :ok <- bounded_somewhere(interval, from, to),
-         {:ok, lower} <- utc(from),
-         {:ok, upper} <- utc(to) do
+         {:ok, lower} <- utc(from, interval),
+         {:ok, upper} <- utc(to, interval),
+         :ok <- bounded_somewhere(interval, lower, upper) do
       {:ok, half_open(lower, upper)}
     end
   end
@@ -161,10 +161,8 @@ defmodule Tempo.SQL.Conversion do
   end
 
   def interval_to_queryable_range(%Tempo{} = expression) do
-    with {:ok, {from, to}} <- stretch(expression),
-         :ok <- bounded_somewhere(expression, from, to),
-         {:ok, lower} <- utc(from),
-         {:ok, upper} <- utc(to) do
+    with {:ok, {lower, upper}} <- stretch(expression),
+         :ok <- bounded_somewhere(expression, lower, upper) do
       {:ok, half_open(lower, upper)}
     end
   end
@@ -403,8 +401,9 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  # The stretch an expression covers: its spans' first start to their last
-  # end, an open end unbound; one with no end from its first occurrence.
+  # The stretch an expression covers, at UTC: its spans' first start to
+  # their last end, an open end unbound; one with no end from its first
+  # occurrence.
   defp stretch(%Tempo{} = expression) do
     case Tempo.to_interval(expression) do
       {:ok, interval} -> spans_stretch(IntervalSet.members(interval), expression)
@@ -414,12 +413,8 @@ defmodule Tempo.SQL.Conversion do
   end
 
   defp spans_stretch(spans, expression) do
-    case all_instants(spans) do
-      {:ok, pairs} ->
-        {:ok, {earliest(Enum.map(pairs, &elem(&1, 0))), latest(Enum.map(pairs, &elem(&1, 1)))}}
-
-      {:error, exception} ->
-        {:error, unsupported(:unsupported_endpoint, expression, exception)}
+    with {:ok, pairs} <- all_instants(spans, expression) do
+      {:ok, {earliest(Enum.map(pairs, &elem(&1, 0))), latest(Enum.map(pairs, &elem(&1, 1)))}}
     end
   end
 
@@ -430,7 +425,7 @@ defmodule Tempo.SQL.Conversion do
     with {:ok, _walk} <- started(expression),
          {:ok, interval} <- Tempo.to_interval(IntervalSet.first(expression)),
          {:ok, {from, _to}} <- spans_stretch(IntervalSet.members(interval), expression) do
-      {:ok, {from, nil}}
+      {:ok, {from, :unbound}}
     end
   end
 
@@ -441,51 +436,84 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  defp all_instants(spans) do
+  # Each span's ends, at UTC.
+  defp all_instants(spans, expression) do
     Enum.reduce_while(spans, {:ok, []}, fn span, {:ok, acc} ->
-      case Interval.instants(span) do
+      case utc_instants(span, expression) do
         {:ok, pair} -> {:cont, {:ok, [pair | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
-  # The first of instants, or none where one of them is open.
+  defp utc_instants(span, expression) do
+    with {:ok, {from, to}} <- span_ends(span, expression),
+         {:ok, lower} <- utc(from, expression),
+         {:ok, upper} <- utc(to, expression) do
+      {:ok, {lower, upper}}
+    end
+  end
+
+  defp span_ends(span, expression) do
+    case Interval.instants(span) do
+      {:ok, pair} -> {:ok, pair}
+      {:error, exception} -> {:error, unsupported(:unsupported_endpoint, expression, exception)}
+    end
+  end
+
+  # The first of UTC instants, or none where one of them is open.
   defp earliest(instants) do
-    if nil in instants do
-      nil
+    if :unbound in instants do
+      :unbound
     else
-      Enum.min_by(instants, &utc_ticks/1, fn -> nil end)
+      Enum.min(instants, DateTime, fn -> :unbound end)
     end
   end
 
   defp latest(instants) do
-    if nil in instants do
-      nil
+    if :unbound in instants do
+      :unbound
     else
-      Enum.max_by(instants, &utc_ticks/1, fn -> nil end)
+      Enum.max(instants, DateTime, fn -> :unbound end)
     end
   end
 
-  defp utc_ticks(instant) do
-    {:ok, utc} = utc(instant)
-    DateTime.to_unix(utc, :microsecond)
-  end
-
   # An instant with no zone is stored as though at UTC; one of another
-  # calendar is stored as the Gregorian instant it is.
-  defp utc(nil) do
+  # calendar is stored as the Gregorian instant it is. An instant that
+  # cannot be placed so is the expression's error.
+  defp utc(nil, _expression) do
     {:ok, :unbound}
   end
 
-  defp utc(%NaiveDateTime{} = naive) do
-    with {:ok, iso} <- NaiveDateTime.convert(naive, Calendar.ISO),
-         do: DateTime.from_naive(iso, "Etc/UTC")
+  defp utc(instant, expression) do
+    instant
+    |> gregorian_utc()
+    |> placed(instant, expression)
   end
 
-  defp utc(%DateTime{} = datetime) do
-    with {:ok, iso} <- DateTime.convert(datetime, Calendar.ISO),
-         do: DateTime.shift_zone(iso, "Etc/UTC")
+  defp gregorian_utc(%NaiveDateTime{} = naive) do
+    with {:ok, iso} <- NaiveDateTime.convert(naive, Calendar.ISO) do
+      DateTime.from_naive(iso, "Etc/UTC")
+    end
+  end
+
+  defp gregorian_utc(%DateTime{} = datetime) do
+    with {:ok, iso} <- DateTime.convert(datetime, Calendar.ISO) do
+      DateTime.shift_zone(iso, "Etc/UTC")
+    end
+  end
+
+  defp placed({:ok, utc}, _instant, _expression) do
+    {:ok, utc}
+  end
+
+  defp placed({:error, reason}, instant, expression) do
+    {:error,
+     UnsupportedValueError.exception(
+       reason: :unsupported_endpoint,
+       value: expression,
+       message: "cannot place #{inspect(instant)} at UTC: #{inspect(reason)}"
+     )}
   end
 
   defp half_open(lower, upper) do
@@ -519,7 +547,7 @@ defmodule Tempo.SQL.Conversion do
       Enum.any?([from, to], &(match?(%Tempo{}, &1) and not is_nil(Tempo.qualification(&1))))
   end
 
-  defp bounded_somewhere(interval, nil, nil) do
+  defp bounded_somewhere(interval, :unbound, :unbound) do
     {:error,
      UnsupportedValueError.exception(
        reason: :fully_unbounded,

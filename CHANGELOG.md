@@ -2,6 +2,12 @@
 
 All notable changes to `ex_tempo_sql` are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.4.0] — Unreleased
+
+### Fixed
+
+* The stretch a composite type stores for a set or a recurrence is an `UnsupportedValueError` where an instant cannot be placed at UTC, where it raised a `MatchError`.
+
 ## [v0.3.0] — 2026-10-28
 
 ### Breaking changes
