@@ -2,11 +2,9 @@
 
 The work planned for `ex_tempo_sql`. Designs are in [plans/](plans/).
 
-## In progress
-
-* [ ] **Release 0.4.0** — the floating frame, SQLite storage and the fixes since 0.3.0. Reviewed 2026-11-01, every gate green; it waits on its commit, tag and publish.
-
 ## Done
+
+* [x] **Release 0.4.0** — the floating frame, SQLite storage and the fixes since 0.3.0, on ex_tempo 2.3. 2026-11-01, v0.4.0.
 
 * [x] **SQLite storage** — `Tempo.Ecto.SQLite.TempoRange`, its query macros and migration helpers; design in [plans/sqlite.md](plans/sqlite.md). 2026-11-01.
 
