@@ -8,7 +8,15 @@ defmodule Tempo.SQL.Test.RepoCase do
   using do
     quote do
       alias Tempo.SQL.Repo
-      alias Tempo.SQL.Test.{Calendar, FidelityCalendar, FidelityMeeting, Meeting}
+
+      alias Tempo.SQL.Test.{
+        Calendar,
+        FidelityCalendar,
+        FidelityMeeting,
+        FidelityOpeningHours,
+        Meeting,
+        OpeningHours
+      }
 
       import Ecto
       import Ecto.Query

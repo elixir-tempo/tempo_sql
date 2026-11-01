@@ -2,13 +2,15 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ex_tempo_sql.svg)](https://hex.pm/packages/ex_tempo_sql)
 
-Ecto types, query macros and migration helpers that store [Tempo](https://hexdocs.pm/ex_tempo) expressions in PostgreSQL `tstzrange` and `tstzmultirange` columns.
+Ecto types, query macros and migration helpers that store [Tempo](https://hexdocs.pm/ex_tempo) expressions in PostgreSQL `tstzrange` and `tstzmultirange` columns, or `tsrange` and `tsmultirange` columns for floating values.
 
 Tempo models time as intervals, not instants. PostgreSQL models the same shape natively — a `tstzrange` **is** a bounded span with the half-open `[lower, upper)` convention, and `tstzmultirange` (PG 14+) is a set of disjoint spans. `tempo_sql` is the adapter between them: a Tempo interval dumps straight to a Postgrex range, loads straight back, and takes part in Postgres range queries (`@>`, `&&`, `-|-`) as a first-class value.
 
 ## Features
 
 * **Plain ranges** — `Tempo.Ecto.Interval` and `Tempo.Ecto.IntervalSet` store an expression's spans as `tstzrange` and `tstzmultirange`, queried with Postgres's range operators and GiST indexes.
+
+* **Two frames** — a column on the UTC line (`tstzrange`) holds values in a zone or at a time shift, and a floating column (`tsrange`, declared `frame: :floating`) holds values with neither, such as opening hours. A value of the other frame is refused, never placed on the wrong line.
 
 * **Whole expressions** — the composite `tempo_range` and `tempo_multirange` types keep an expression as it was written, its resolution, qualifications, recurrence, calendar, zone and metadata, beside the range it covers.
 
@@ -88,9 +90,9 @@ end
 iex> import Ecto.Query
 iex> import Tempo.Ecto.QueryAPI
 iex> import Tempo.Sigils
-iex> standup = ~o"2026-06-15T09:00/2026-06-15T10:00"
+iex> standup = ~o"2026-06-15T09:00Z/2026-06-15T10:00Z"
 iex> Repo.insert!(%MyApp.Meeting{name: "Standup", window: standup})
-iex> {:ok, search} = Tempo.Ecto.Interval.dump(~o"2026-06-15T09:30/2026-06-15T09:45")
+iex> {:ok, search} = Tempo.Ecto.Interval.dump(~o"2026-06-15T09:30Z/2026-06-15T09:45Z")
 iex> Repo.all(from m in MyApp.Meeting, where: overlaps(m.window, ^search), select: m.name)
 ["Standup"]
 ```
@@ -103,20 +105,33 @@ iex> Repo.all(from m in MyApp.Meeting, where: overlaps(m.window, ^search), selec
 
 | Type                       | Stores                                                         | Postgres column    |
 |----------------------------|----------------------------------------------------------------|--------------------|
-| `Tempo.Ecto.Interval`      | an expression of one span: a value or an interval              | `tstzrange`        |
-| `Tempo.Ecto.IntervalSet`   | an expression with a last span: a set, a bounded recurrence    | `tstzmultirange`   |
-| `Tempo.Ecto.Tempo`         | as `Tempo.Ecto.Interval`, under the name kept for older schemas | `tstzrange`        |
+| `Tempo.Ecto.Interval`      | an expression of one span: a value or an interval              | `tstzrange`, or `tsrange` when floating |
+| `Tempo.Ecto.IntervalSet`   | an expression with a last span: a set, a bounded recurrence    | `tstzmultirange`, or `tsmultirange` when floating |
+| `Tempo.Ecto.Tempo`         | as `Tempo.Ecto.Interval`, under the name kept for older schemas | `tstzrange`, or `tsrange` when floating |
 
 **Composite — the whole expression, read back as it was written:**
 
 | Type                          | Stores                                     | Postgres column    |
 |-------------------------------|--------------------------------------------|--------------------|
-| `Tempo.Ecto.TempoRange`       | any expression with ISO 8601 text          | `tempo_range`      |
-| `Tempo.Ecto.TempoMultirange`  | any expression with ISO 8601 text          | `tempo_multirange` |
+| `Tempo.Ecto.TempoRange`       | any expression with ISO 8601 text          | `tempo_range`, or `tempo_floating_range` when floating |
+| `Tempo.Ecto.TempoMultirange`  | any expression with ISO 8601 text          | `tempo_multirange`, or `tempo_floating_multirange` when floating |
 
 Use the composite types when the plain-range mode's losses hurt — recurrences, qualifications (`:uncertain`, `:approximate`), calendars other than the Gregorian, zones, metadata, or the resolution a value was written to. The composite stores the stretch the expression covers, so range queries still find it, beside its ISO 8601 text. See the [storage contract guide](https://hexdocs.pm/ex_tempo_sql/storage-contract.html#composite-mode--tempo_range-and-tempo_multirange) for setup and trade-offs.
 
 An end written to a date is read through it, so a value or an interval is stored as the instants it runs between: `~o"2026-06-15/2026-06-20"` is the six days, the range `[2026-06-15 00:00, 2026-06-21 00:00)`, and `~o"2026"` is the year, `[2026-01-01 00:00, 2027-01-01 00:00)`. A plain range keeps no resolution, so the year comes back as the instants that bound it unless the column declares one.
+
+### The `:frame` field option
+
+Every type takes a `:frame` field option naming the line its column's values lie on. The default, `:utc`, is a `timestamptz` column: it holds a value in a zone or at a time shift as the UTC instants it is. `:floating` is a `timestamp` column: it holds a value with no zone and no time shift, as written, the same wall-clock times wherever it is read.
+
+```elixir
+schema "shops" do
+  field :opening_hours, Tempo.Ecto.Interval, frame: :floating
+  field :last_delivery, Tempo.Ecto.Interval
+end
+```
+
+A floating value given to a UTC column, or a zoned one to a floating column, is refused: Tempo does not compare or combine values of two frames, so neither is placed on the other's line.
 
 ### The `:resolution` field option
 
@@ -146,15 +161,16 @@ A column declared `resolution: :year` loads a range of whole years as the years 
 
 ## Migration helpers
 
-`Tempo.SQL.Migration` exposes three macros:
+`Tempo.SQL.Migration` exposes, among others, these macros:
 
 ```elixir
 add_interval :window                # → add :window, :tstzrange
 add_interval_set :busy_times        # → add :busy_times, :tstzmultirange
+add_interval :hours, frame: :floating     # → add :hours, :tsrange
 create_interval_index :meetings, :window  # GiST index — required for range-operator speed
 ```
 
-All three are thin delegates — you can also write the raw `add :window, :tstzrange` form.
+All three are thin delegates — you can also write the raw `add :window, :tstzrange` form. `create_tempo_types/1`, `add_tempo_range/2` and `add_tempo_multirange/2` do the same for the composite types, `frame: :floating` making their floating counterparts.
 
 ## Storage contract
 
@@ -172,11 +188,15 @@ For the full mapping — what is kept, what is dropped, what is refused — see 
 
 * **A value at a time shift** (`Z`, `+02:00`), or in a named zone with a time zone database configured (see [Installation](#installation)), stored as the UTC instants it is.
 
+* **A floating value**, with no zone and no time shift, in a column declared `frame: :floating`, stored as the wall-clock times it is.
+
 ### What is **not** storable by the plain types (returns `:error`)
 
 * An expression of several spans under `Tempo.Ecto.Interval`, and a recurrence with no end under `Tempo.Ecto.IntervalSet`.
 
 * An interval unbounded on both sides.
+
+* A value of the other frame: a floating value in a column on the UTC line, or a value in a zone or at a time shift in a floating column.
 
 * A qualified value (`:uncertain`, `:approximate`) — Postgres ranges have no notion of uncertainty.
 
@@ -188,7 +208,7 @@ For the full mapping — what is kept, what is dropped, what is refused — see 
 
 ### What is **lossy on round-trip**
 
-A plain range keeps the span and nothing else. A loaded value is Gregorian and at UTC, its ends to the second or to the column's `:resolution`. Lost on the way are the expression's metadata, its zone (an expression in a zone comes back at UTC), and the resolution it was written to. The composite types keep all of these.
+A plain range keeps the span and nothing else. A loaded value is Gregorian, at UTC or floating as its column is, its ends to the second or to the column's `:resolution`. Lost on the way are the expression's metadata, its zone (an expression in a zone comes back at UTC), and the resolution it was written to. The composite types keep all of these.
 
 ## Testing against a live database
 

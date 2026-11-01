@@ -20,10 +20,11 @@ defmodule Tempo.SQL.ErrorPathsTest do
   alias Tempo.Ecto.TempoRange
   alias Tempo.SQL.Meta
 
-  @second %{resolution: :second}
+  @second %{frame: :utc, resolution: :second}
+  @floating %{frame: :floating, resolution: :second}
 
   defp interval do
-    ~o"2027-06-15T09:00/2027-06-15T10:00"
+    ~o"2027-06-15T09:00Z/2027-06-15T10:00Z"
   end
 
   # A time of day with no date has no place on the time line, so no range
@@ -42,7 +43,7 @@ defmodule Tempo.SQL.ErrorPathsTest do
 
   # Two disjoint years — a set, not a single span.
   defp disjoint do
-    ~o"{2027,2029}Y"
+    ~o"{2027,2029}Y[Etc/UTC]"
   end
 
   describe "the default-argument forms" do
@@ -69,9 +70,17 @@ defmodule Tempo.SQL.ErrorPathsTest do
       assert {:ok, ^set} = TempoMultirange.load(composite)
     end
 
-    test "cast_type/0 defaults to second resolution on every type" do
+    test "cast_type/0 defaults to second resolution on the UTC line on every type" do
       for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
-        assert {:parameterized, {^type, %{resolution: :second}}} = type.cast_type()
+        assert {:parameterized, {^type, %{frame: :utc, resolution: :second}}} = type.cast_type()
+      end
+    end
+
+    test "dump/1 is on the UTC line, so it refuses a floating value" do
+      floating = ~o"2027-06-15T09:00/2027-06-15T10:00"
+
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert type.dump(floating) == :error
       end
     end
   end
@@ -112,6 +121,11 @@ defmodule Tempo.SQL.ErrorPathsTest do
     test "the composite stores it as the stretch it covers" do
       assert {:ok, {range, "second", _meta}} = TempoRange.dump(disjoint(), nil, @second)
       assert {range.lower, range.upper} == {~U[2027-01-01 00:00:00Z], ~U[2030-01-01 00:00:00Z]}
+    end
+
+    test "the floating composite stores a floating one as the stretch it covers" do
+      assert {:ok, {range, "second", _meta}} = TempoRange.dump(~o"{2027,2029}Y", nil, @floating)
+      assert {range.lower, range.upper} == {~N[2027-01-01 00:00:00], ~N[2030-01-01 00:00:00]}
     end
 
     test "the plain interval type refuses to cast it" do

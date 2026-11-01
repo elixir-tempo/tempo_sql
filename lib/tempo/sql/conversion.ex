@@ -11,7 +11,10 @@ defmodule Tempo.SQL.Conversion do
       the instant it ends, half-open. An end written to a date is read
       through it, so `2026-06-15/2026-06-20` is stored up to the 21st.
 
-    * A value with no zone is stored as though at UTC.
+    * A column is on one frame: a `tstzrange` holds instants on the UTC
+      line, a value in a zone or at a time shift; a `tsrange` holds
+      floating instants, a value with neither. A value of the other frame
+      is refused, never placed on this one.
 
     * Qualifications (`:uncertain`, `:approximate`) and calendars other
       than the Gregorian are rejected by the plain types, which cannot
@@ -30,9 +33,17 @@ defmodule Tempo.SQL.Conversion do
   @gregorian_calendars [Calendar.ISO, Calendrical.Gregorian]
   @resolutions [:year, :month, :day, :hour, :minute, :second]
   @clock_resolutions [:hour, :minute, :second]
+  @frames [:utc, :floating]
 
   @typedoc "A unit a loaded range's ends are written to."
   @type resolution() :: :year | :month | :day | :hour | :minute | :second
+
+  @typedoc """
+  The line a column's instants lie on: `:utc` for a `timestamptz` range,
+  whose values are in a zone or at a time shift, or `:floating` for a
+  `timestamp` range, whose values have neither.
+  """
+  @type frame() :: :utc | :floating
 
   @doc """
   Returns the valid values for the `:resolution` option on the Ecto
@@ -54,8 +65,9 @@ defmodule Tempo.SQL.Conversion do
   end
 
   @doc """
-  Converts an interval into a `%Postgrex.Range{}` with `DateTime`
-  bounds in UTC.
+  Converts an interval into a `%Postgrex.Range{}` on a frame: `DateTime`
+  bounds at UTC for a `tstzrange`, or `NaiveDateTime` bounds for a
+  `tsrange`.
 
   The range is half-open — lower inclusive, upper exclusive — from the
   instant the interval begins to the instant it ends, so no boundary is
@@ -65,19 +77,26 @@ defmodule Tempo.SQL.Conversion do
 
   * `interval` is a `t:Tempo.t/0` interval.
 
+  * `frame` is `:utc` (the default) for an interval in a zone or at a
+    time shift, or `:floating` for one with neither.
+
   ### Returns
 
   * `{:ok, range}` where `range` is a `t:Postgrex.Range.t/0`.
 
   * `{:error, exception}` where `exception` is a
     `t:Tempo.SQL.UnsupportedValueError.t/0`, when the interval holds
-    something a `tstzrange` cannot — see the storage-contract guide.
+    something the range cannot — see the storage-contract guide. Its
+    reason is `:frame` for an interval of the other frame.
+
+  * `{:error, %ArgumentError{}}` when `frame` is not one of
+    `valid_frames/0`.
 
   ### Examples
 
       iex> workday = Tempo.Interval.new!(
-      ...>   from: ~o"2027-06-15T09:00:00",
-      ...>   to: ~o"2027-06-15T17:00:00"
+      ...>   from: ~o"2027-06-15T09:00:00Z",
+      ...>   to: ~o"2027-06-15T17:00:00Z"
       ...> )
       iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_range(workday)
       iex> {range.lower, range.upper}
@@ -85,33 +104,43 @@ defmodule Tempo.SQL.Conversion do
       iex> {range.lower_inclusive, range.upper_inclusive}
       {true, false}
 
-      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_range(~o"2027-06-15/2027-06-20")
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_range(~o"2027-06-15/2027-06-20", :floating)
       iex> {range.lower, range.upper}
-      {~U[2027-06-15 00:00:00Z], ~U[2027-06-21 00:00:00Z]}
+      {~N[2027-06-15 00:00:00], ~N[2027-06-21 00:00:00]}
 
-      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(~o"1984?/2004")
+      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(~o"2027-06-15/2027-06-20")
+      iex> error.reason
+      :frame
+
+      iex> {:error, error} = Tempo.SQL.Conversion.interval_to_range(~o"1984?/2004", :floating)
       iex> error.reason
       :qualification
 
   """
-  @spec interval_to_range(Tempo.t()) ::
-          {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
-  def interval_to_range(%Tempo{} = interval) do
+  @spec interval_to_range(Tempo.t(), frame()) ::
+          {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t() | Exception.t()}
+  def interval_to_range(interval, frame \\ :utc)
+
+  def interval_to_range(%Tempo{} = interval, frame) when frame in @frames do
     with {:ok, span} <- one_span(interval),
          :ok <- plain(span),
          {:ok, {from, to}} <- span_instants(span, interval),
-         {:ok, lower} <- utc(from, interval),
-         {:ok, upper} <- utc(to, interval),
+         {:ok, lower} <- bound(from, frame, interval),
+         {:ok, upper} <- bound(to, frame, interval),
          :ok <- bounded_somewhere(interval, lower, upper) do
       {:ok, half_open(lower, upper)}
     end
   end
 
+  def interval_to_range(%Tempo{}, frame) do
+    {:error, frame_argument_error(frame)}
+  end
+
   @doc """
   Converts any expression into a `%Postgrex.Range{}` tolerant enough
-  for the composite `tempo_range` type.
+  for the composite `tempo_range` and `tempo_floating_range` types.
 
-  Unlike `interval_to_range/1`, this accepts what the plain `tstzrange`
+  Unlike `interval_to_range/2`, this accepts what the plain range
   encoder rejects — qualifications, calendars other than the Gregorian,
   values that name several, recurrences — because the composite's
   `meta` column carries the expression losslessly. The range is the
@@ -122,6 +151,9 @@ defmodule Tempo.SQL.Conversion do
 
   * `expression` is a `t:Tempo.t/0`.
 
+  * `frame` is `:utc` (the default) for an expression in a zone or at a
+    time shift, or `:floating` for one with neither.
+
   ### Returns
 
   * `{:ok, range}` where `range` is a `t:Postgrex.Range.t/0`. An open
@@ -130,13 +162,17 @@ defmodule Tempo.SQL.Conversion do
 
   * `{:error, exception}` when the expression has no place on the time
     line at all — a bare duration, a value with no year, a span open at
-    both ends, or a recurrence counted back with no start.
+    both ends, or a recurrence counted back with no start — or, with
+    the reason `:frame`, when it is of the other frame.
+
+  * `{:error, %ArgumentError{}}` when `frame` is not one of
+    `valid_frames/0`.
 
   ### Examples
 
       iex> workday = Tempo.Interval.new!(
-      ...>   from: ~o"2027-06-15T09:00:00",
-      ...>   to: ~o"2027-06-15T17:00:00"
+      ...>   from: ~o"2027-06-15T09:00:00Z",
+      ...>   to: ~o"2027-06-15T17:00:00Z"
       ...> )
       iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(workday)
       iex> range.upper
@@ -144,14 +180,16 @@ defmodule Tempo.SQL.Conversion do
 
   An open-ended interval keeps a usable lower bound:
 
-      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(~o"2027-06-15T09:00:00/..")
+      iex> {:ok, range} = Tempo.SQL.Conversion.interval_to_queryable_range(~o"2027-06-15T09:00:00/..", :floating)
       iex> {range.lower, range.upper}
-      {~U[2027-06-15 09:00:00Z], :unbound}
+      {~N[2027-06-15 09:00:00], :unbound}
 
   """
-  @spec interval_to_queryable_range(Tempo.t() | Tempo.Duration.t()) ::
-          {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t()}
-  def interval_to_queryable_range(%Tempo.Duration{} = duration) do
+  @spec interval_to_queryable_range(Tempo.t() | Tempo.Duration.t(), frame()) ::
+          {:ok, Postgrex.Range.t()} | {:error, UnsupportedValueError.t() | Exception.t()}
+  def interval_to_queryable_range(expression, frame \\ :utc)
+
+  def interval_to_queryable_range(%Tempo.Duration{} = duration, _frame) do
     {:error,
      UnsupportedValueError.exception(
        reason: :unsupported_endpoint,
@@ -160,11 +198,15 @@ defmodule Tempo.SQL.Conversion do
      )}
   end
 
-  def interval_to_queryable_range(%Tempo{} = expression) do
-    with {:ok, {lower, upper}} <- stretch(expression),
+  def interval_to_queryable_range(%Tempo{} = expression, frame) when frame in @frames do
+    with {:ok, {lower, upper}} <- stretch(expression, frame),
          :ok <- bounded_somewhere(expression, lower, upper) do
       {:ok, half_open(lower, upper)}
     end
+  end
+
+  def interval_to_queryable_range(%Tempo{}, frame) do
+    {:error, frame_argument_error(frame)}
   end
 
   @doc """
@@ -275,6 +317,57 @@ defmodule Tempo.SQL.Conversion do
   def validate_resolution!(other) do
     raise ArgumentError,
           "expected :resolution to be one of #{inspect(@resolutions)}, got: #{inspect(other)}"
+  end
+
+  @doc """
+  Returns the valid values for the `:frame` option on the Ecto types.
+
+  ### Returns
+
+  * A list of frame atoms, the default first.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.valid_frames()
+      [:utc, :floating]
+
+  """
+  @spec valid_frames() :: [frame(), ...]
+  def valid_frames do
+    @frames
+  end
+
+  @doc """
+  Validates a `:frame` option.
+
+  ### Arguments
+
+  * `frame` is the value given as the `:frame` option.
+
+  ### Returns
+
+  * The frame atom unchanged, when it is one of those returned by
+    `valid_frames/0`.
+
+  * Raises `ArgumentError` otherwise, naming the value it was given.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.validate_frame!(:floating)
+      :floating
+
+      iex> Tempo.SQL.Conversion.validate_frame!(:local)
+      ** (ArgumentError) expected :frame to be one of [:utc, :floating], got: :local
+
+  """
+  @spec validate_frame!(term()) :: frame()
+  def validate_frame!(frame) when frame in @frames do
+    frame
+  end
+
+  def validate_frame!(other) do
+    raise ArgumentError,
+          "expected :frame to be one of #{inspect(@frames)}, got: #{inspect(other)}"
   end
 
   @doc """
@@ -401,30 +494,32 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  # The stretch an expression covers, at UTC: its spans' first start to
+  # The stretch an expression covers, on the frame: its spans' first start to
   # their last end, an open end unbound; one with no end from its first
   # occurrence.
-  defp stretch(%Tempo{} = expression) do
+  defp stretch(%Tempo{} = expression, frame) do
     case Tempo.to_interval(expression) do
-      {:ok, interval} -> spans_stretch(IntervalSet.members(interval), expression)
-      {:error, %Tempo.ConversionError{reason: :unbounded}} -> first_onward(expression)
+      {:ok, interval} -> spans_stretch(IntervalSet.members(interval), frame, expression)
+      {:error, %Tempo.ConversionError{reason: :unbounded}} -> first_onward(expression, frame)
       {:error, exception} -> {:error, unsupported(:unsupported_endpoint, expression, exception)}
     end
   end
 
-  defp spans_stretch(spans, expression) do
-    with {:ok, pairs} <- all_instants(spans, expression) do
-      {:ok, {earliest(Enum.map(pairs, &elem(&1, 0))), latest(Enum.map(pairs, &elem(&1, 1)))}}
+  defp spans_stretch(spans, frame, expression) do
+    with {:ok, pairs} <- all_instants(spans, frame, expression) do
+      lowers = Enum.map(pairs, &elem(&1, 0))
+      uppers = Enum.map(pairs, &elem(&1, 1))
+      {:ok, {earliest(lowers, frame), latest(uppers, frame)}}
     end
   end
 
   # An expression with no end has a first occurrence only where it has a
   # start, which `Tempo.walk/2` asks: it refuses one with an open start, a
   # recurrence counted back from no end.
-  defp first_onward(expression) do
+  defp first_onward(expression, frame) do
     with {:ok, _walk} <- started(expression),
          {:ok, interval} <- Tempo.to_interval(IntervalSet.first(expression)),
-         {:ok, {from, _to}} <- spans_stretch(IntervalSet.members(interval), expression) do
+         {:ok, {from, _to}} <- spans_stretch(IntervalSet.members(interval), frame, expression) do
       {:ok, {from, :unbound}}
     end
   end
@@ -436,20 +531,20 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  # Each span's ends, at UTC.
-  defp all_instants(spans, expression) do
+  # Each span's ends, on the frame.
+  defp all_instants(spans, frame, expression) do
     Enum.reduce_while(spans, {:ok, []}, fn span, {:ok, acc} ->
-      case utc_instants(span, expression) do
+      case framed_instants(span, frame, expression) do
         {:ok, pair} -> {:cont, {:ok, [pair | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
-  defp utc_instants(span, expression) do
+  defp framed_instants(span, frame, expression) do
     with {:ok, {from, to}} <- span_ends(span, expression),
-         {:ok, lower} <- utc(from, expression),
-         {:ok, upper} <- utc(to, expression) do
+         {:ok, lower} <- bound(from, frame, expression),
+         {:ok, upper} <- bound(to, frame, expression) do
       {:ok, {lower, upper}}
     end
   end
@@ -461,50 +556,84 @@ defmodule Tempo.SQL.Conversion do
     end
   end
 
-  # The first of UTC instants, or none where one of them is open.
-  defp earliest(instants) do
+  # The first of a frame's instants, or none where one of them is open.
+  defp earliest(instants, frame) do
     if :unbound in instants do
       :unbound
     else
-      Enum.min(instants, DateTime, fn -> :unbound end)
+      Enum.min(instants, ordering(frame), fn -> :unbound end)
     end
   end
 
-  defp latest(instants) do
+  defp latest(instants, frame) do
     if :unbound in instants do
       :unbound
     else
-      Enum.max(instants, DateTime, fn -> :unbound end)
+      Enum.max(instants, ordering(frame), fn -> :unbound end)
     end
   end
 
-  # An instant with no zone is stored as though at UTC; one of another
-  # calendar is stored as the Gregorian instant it is. An instant that
-  # cannot be placed so is the expression's error.
-  defp utc(nil, _expression) do
+  defp ordering(:utc) do
+    DateTime
+  end
+
+  defp ordering(:floating) do
+    NaiveDateTime
+  end
+
+  # An instant as a range bound on the frame: an instant in a zone or at a
+  # time shift is a UTC `DateTime`, a floating one a `NaiveDateTime`, each
+  # in the Gregorian calendar. An instant of the other frame, or one that
+  # cannot be placed so, is the expression's error.
+  defp bound(nil, _frame, _expression) do
     {:ok, :unbound}
   end
 
-  defp utc(instant, expression) do
-    instant
+  defp bound(%DateTime{} = datetime, :utc, expression) do
+    datetime
     |> gregorian_utc()
-    |> placed(instant, expression)
+    |> placed(datetime, expression)
   end
 
-  defp gregorian_utc(%NaiveDateTime{} = naive) do
-    with {:ok, iso} <- NaiveDateTime.convert(naive, Calendar.ISO) do
-      DateTime.from_naive(iso, "Etc/UTC")
-    end
+  defp bound(%NaiveDateTime{} = naive, :floating, expression) do
+    naive
+    |> NaiveDateTime.convert(Calendar.ISO)
+    |> placed(naive, expression)
   end
 
-  defp gregorian_utc(%DateTime{} = datetime) do
+  defp bound(_instant, frame, expression) do
+    {:error,
+     UnsupportedValueError.exception(
+       reason: :frame,
+       value: expression,
+       message: frame_message(frame)
+     )}
+  end
+
+  defp frame_argument_error(frame) do
+    ArgumentError.exception(
+      "expected the frame to be one of #{inspect(@frames)}, got: #{inspect(frame)}"
+    )
+  end
+
+  defp frame_message(:utc) do
+    "a value with no zone and no time shift is floating, and a column on the UTC line " <>
+      "cannot hold it; store it in a column with frame: :floating"
+  end
+
+  defp frame_message(:floating) do
+    "a value in a zone or at a time shift is on the UTC line, and a floating column " <>
+      "cannot hold it; store it in a column with frame: :utc"
+  end
+
+  defp gregorian_utc(datetime) do
     with {:ok, iso} <- DateTime.convert(datetime, Calendar.ISO) do
       DateTime.shift_zone(iso, "Etc/UTC")
     end
   end
 
-  defp placed({:ok, utc}, _instant, _expression) do
-    {:ok, utc}
+  defp placed({:ok, instant}, _instant, _expression) do
+    {:ok, instant}
   end
 
   defp placed({:error, reason}, instant, expression) do
@@ -512,7 +641,7 @@ defmodule Tempo.SQL.Conversion do
      UnsupportedValueError.exception(
        reason: :unsupported_endpoint,
        value: expression,
-       message: "cannot place #{inspect(instant)} at UTC: #{inspect(reason)}"
+       message: "cannot place #{inspect(instant)} as a range bound: #{inspect(reason)}"
      )}
   end
 

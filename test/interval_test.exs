@@ -5,7 +5,8 @@ defmodule Tempo.Ecto.IntervalTest do
 
   alias Tempo.Ecto.Interval
 
-  @default_params %{resolution: :second}
+  @default_params %{frame: :utc, resolution: :second}
+  @floating_params %{frame: :floating, resolution: :second}
 
   defp half_open(lower, upper) do
     %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
@@ -19,12 +20,22 @@ defmodule Tempo.Ecto.IntervalTest do
 
   describe "init/1" do
     test "defaults :resolution to :second" do
-      assert Interval.init([]) == %{resolution: :second}
+      assert Interval.init([]) == %{frame: :utc, resolution: :second}
+    end
+
+    test "defaults :frame to :utc and accepts :floating" do
+      assert %{frame: :utc} = Interval.init([])
+      assert %{frame: :floating} = Interval.init(frame: :floating)
+    end
+
+    test "rejects a frame it does not know" do
+      assert_raise ArgumentError, ~r/:local/, fn -> Interval.init(frame: :local) end
+      assert_raise ArgumentError, fn -> Interval.init(frame: "floating") end
     end
 
     test "accepts valid resolutions" do
       for r <- [:year, :month, :day, :hour, :minute, :second] do
-        assert Interval.init(resolution: r) == %{resolution: r}
+        assert Interval.init(resolution: r) == %{frame: :utc, resolution: r}
       end
     end
 
@@ -37,7 +48,7 @@ defmodule Tempo.Ecto.IntervalTest do
   describe "dump/3 — the storable shape" do
     test "dumps an anchored interval as a Postgrex.Range in UTC" do
       assert {:ok, %Postgrex.Range{} = range} =
-               Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @default_params)
+               Interval.dump(~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z", nil, @default_params)
 
       assert range.lower == ~U[2026-06-15 09:00:00Z]
       assert range.upper == ~U[2026-06-15 17:00:00Z]
@@ -47,25 +58,25 @@ defmodule Tempo.Ecto.IntervalTest do
 
     test "dumps an end written to a date as the instant after it" do
       assert {:ok, half_open(~U[2026-06-15 00:00:00Z], ~U[2026-06-21 00:00:00Z])} ==
-               Interval.dump(~o"2026-06-15/2026-06-20", nil, @default_params)
+               Interval.dump(~o"2026-06-15/2026-06-20[Etc/UTC]", nil, @default_params)
     end
 
     test "dumps a value as the span it denotes" do
       assert {:ok, half_open(~U[2026-01-01 00:00:00Z], ~U[2027-01-01 00:00:00Z])} ==
-               Interval.dump(~o"2026", nil, @default_params)
+               Interval.dump(~o"2026[Etc/UTC]", nil, @default_params)
 
       assert {:ok, half_open(~U[2026-03-16 00:00:00Z], ~U[2026-03-17 00:00:00Z])} ==
-               Interval.dump(~o"2026-075", nil, @default_params)
+               Interval.dump(~o"2026-075[Etc/UTC]", nil, @default_params)
     end
 
     test "dumps an open-start interval as a Range with :unbound lower" do
       assert {:ok, half_open(:unbound, ~U[2026-06-15 17:00:00Z])} ==
-               Interval.dump(~o"../2026-06-15T17:00:00", nil, @default_params)
+               Interval.dump(~o"../2026-06-15T17:00:00Z", nil, @default_params)
     end
 
     test "dumps an open-end interval as a Range with :unbound upper" do
       assert {:ok, half_open(~U[2026-06-15 09:00:00Z], :unbound)} ==
-               Interval.dump(~o"2026-06-15T09:00:00/..", nil, @default_params)
+               Interval.dump(~o"2026-06-15T09:00:00Z/..", nil, @default_params)
     end
 
     test "returns nil passthrough" do
@@ -237,12 +248,78 @@ defmodule Tempo.Ecto.IntervalTest do
       assert {:ok, ^original} = Interval.load(range, nil, @default_params)
     end
 
-    test "a floating interval is stored as if it were in UTC" do
-      {:ok, range} =
-        Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @default_params)
+    test "a floating interval is refused on the UTC line, not stored as if it were at UTC" do
+      assert :error =
+               Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @default_params)
+    end
 
-      assert {:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"} =
-               Interval.load(range, nil, @default_params)
+    test "a floating interval dumps and loads back floating on the floating frame" do
+      original = ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"
+
+      {:ok, range} = Interval.dump(original, nil, @floating_params)
+
+      assert {:ok, ^original} = Interval.load(range, nil, @floating_params)
+    end
+  end
+
+  describe "the floating frame" do
+    test "reports tsrange" do
+      assert Interval.type(@floating_params) == :tsrange
+    end
+
+    test "dumps a floating interval as a Postgrex.Range of naive bounds" do
+      assert {:ok, half_open(~N[2026-06-15 09:00:00], ~N[2026-06-15 17:00:00])} ==
+               Interval.dump(~o"2026-06-15T09:00:00/2026-06-15T17:00:00", nil, @floating_params)
+    end
+
+    test "dumps a floating end written to a date as the instant after it" do
+      assert {:ok, half_open(~N[2026-06-15 00:00:00], ~N[2026-06-21 00:00:00])} ==
+               Interval.dump(~o"2026-06-15/2026-06-20", nil, @floating_params)
+    end
+
+    test "dumps a floating open end as an unbound upper" do
+      assert {:ok, half_open(~N[2026-06-15 09:00:00], :unbound)} ==
+               Interval.dump(~o"2026-06-15T09:00:00/..", nil, @floating_params)
+    end
+
+    test "refuses an interval at a time shift" do
+      assert :error =
+               Interval.dump(~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z", nil, @floating_params)
+    end
+
+    test "refuses an interval in a zone" do
+      assert :error =
+               Interval.dump(
+                 ~o"2026-06-15T09:00/2026-06-15T17:00[Europe/Paris]",
+                 nil,
+                 @floating_params
+               )
+    end
+
+    test "loads a range of naive bounds as a floating interval" do
+      range = half_open(~N[2026-06-15 09:00:00], ~N[2026-06-15 17:00:00])
+
+      assert {:ok, ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"} =
+               Interval.load(range, nil, @floating_params)
+    end
+
+    test "normalises a closed range of naive bounds to half-open" do
+      range = %Postgrex.Range{
+        lower: ~N[2026-06-15 09:00:00],
+        upper: ~N[2026-06-15 16:59:59],
+        lower_inclusive: true,
+        upper_inclusive: true
+      }
+
+      assert {:ok, ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"} =
+               Interval.load(range, nil, @floating_params)
+    end
+
+    test "resolution: :day reads floating days through" do
+      range = half_open(~N[2026-06-15 00:00:00], ~N[2026-06-16 00:00:00])
+
+      assert {:ok, ~o"2026-06-15/2026-06-15"} =
+               Interval.load(range, nil, Interval.init(resolution: :day, frame: :floating))
     end
   end
 end

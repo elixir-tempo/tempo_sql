@@ -2,7 +2,8 @@ if Code.ensure_loaded?(Ecto.Type) do
   defmodule Tempo.Ecto.IntervalSet do
     @moduledoc """
     Ecto.ParameterizedType for persisting the intervals an expression
-    covers as a PostgreSQL `tstzmultirange` value (PostgreSQL 14+).
+    covers as a PostgreSQL `tstzmultirange` value (PostgreSQL 14+), or
+    as a `tsmultirange` value when they are floating.
 
     It takes any expression with a last span — a set, a bounded
     recurrence, a value naming several — and loads a set of intervals.
@@ -17,13 +18,22 @@ if Code.ensure_loaded?(Ecto.Type) do
 
         add :busy_times, :tstzmultirange
 
-    (or use `Tempo.SQL.Migration.add_interval_set/2`).
+    (or use `Tempo.SQL.Migration.add_interval_set/2`). Floating values
+    go in a `tsmultirange`, on the floating frame:
+
+        field :opening_hours, Tempo.Ecto.IntervalSet, frame: :floating
+
+        add :opening_hours, :tsmultirange
 
     ## Options
 
       * `:resolution` — on load, truncate every member
         interval's endpoints to the given component. Same values
         and semantics as `Tempo.Ecto.Interval`.
+
+      * `:frame` — `:utc` (the default) for a `tstzmultirange` column,
+        `:floating` for a `tsmultirange` column, as for
+        `Tempo.Ecto.Interval`.
 
     ## Storage contract
 
@@ -61,6 +71,9 @@ if Code.ensure_loaded?(Ecto.Type) do
       `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
       Defaults to `:second`.
 
+    * `:frame` is `:utc` (the default) for a `tstzmultirange` column or
+      `:floating` for a `tsmultirange` column.
+
     ### Returns
 
     * A `t:Ecto.ParameterizedType.opts/0` tuple.
@@ -68,10 +81,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     ### Examples
 
         iex> Tempo.Ecto.IntervalSet.cast_type()
-        {:parameterized, {Tempo.Ecto.IntervalSet, %{resolution: :second}}}
+        {:parameterized, {Tempo.Ecto.IntervalSet, %{frame: :utc, resolution: :second}}}
 
-        iex> Tempo.Ecto.IntervalSet.cast_type(resolution: :day)
-        {:parameterized, {Tempo.Ecto.IntervalSet, %{resolution: :day}}}
+        iex> Tempo.Ecto.IntervalSet.cast_type(resolution: :day, frame: :floating)
+        {:parameterized, {Tempo.Ecto.IntervalSet, %{frame: :floating, resolution: :day}}}
 
     """
     @spec cast_type(keyword()) :: Ecto.Type.t()
@@ -80,6 +93,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
+    def type(%{frame: :floating}) do
+      :tsmultirange
+    end
+
     def type(_params) do
       :tstzmultirange
     end
@@ -91,7 +108,12 @@ if Code.ensure_loaded?(Ecto.Type) do
         |> Keyword.get(:resolution, :second)
         |> Conversion.validate_resolution!()
 
-      %{resolution: resolution}
+      frame =
+        options
+        |> Keyword.get(:frame, :utc)
+        |> Conversion.validate_frame!()
+
+      %{resolution: resolution, frame: frame}
     end
 
     @impl Ecto.ParameterizedType
@@ -125,7 +147,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second})
+    def load(value, loader \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def load(nil, _loader, _params) do
       {:ok, nil}
@@ -143,15 +165,15 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second})
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def dump(nil, _, _) do
       {:ok, nil}
     end
 
-    def dump(%Tempo{} = expression, _, _) do
+    def dump(%Tempo{} = expression, _, params) do
       case Conversion.intervals(expression) do
-        {:ok, [_ | _] = intervals} -> dump_members(intervals, [])
+        {:ok, [_ | _] = intervals} -> dump_members(intervals, Map.get(params, :frame, :utc), [])
         _empty_or_error -> :error
       end
     end
@@ -170,13 +192,13 @@ if Code.ensure_loaded?(Ecto.Type) do
       :self
     end
 
-    defp dump_members([], acc) do
+    defp dump_members([], _frame, acc) do
       {:ok, %Postgrex.Multirange{ranges: Enum.reverse(acc)}}
     end
 
-    defp dump_members([interval | rest], acc) do
-      case Conversion.interval_to_range(interval) do
-        {:ok, range} -> dump_members(rest, [range | acc])
+    defp dump_members([interval | rest], frame, acc) do
+      case Conversion.interval_to_range(interval, frame) do
+        {:ok, range} -> dump_members(rest, frame, [range | acc])
         {:error, _} -> :error
       end
     end

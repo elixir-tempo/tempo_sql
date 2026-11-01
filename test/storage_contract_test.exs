@@ -13,8 +13,8 @@ defmodule Tempo.SQL.StorageContractTest do
   alias Tempo.SQL.Conversion
   alias Tempo.SQL.UnsupportedValueError
 
-  defp stored(expression) do
-    {:ok, range} = Conversion.interval_to_range(expression)
+  defp stored(expression, frame \\ :utc) do
+    {:ok, range} = Conversion.interval_to_range(expression, frame)
     {range.lower, range.upper}
   end
 
@@ -42,6 +42,11 @@ defmodule Tempo.SQL.StorageContractTest do
       assert {:error, %UnsupportedValueError{}} = Conversion.interval_to_range(~o"2026Y{6,8}M")
     end
 
+    test "a floating value, because a tstzrange holds instants on the UTC line" do
+      assert {:error, %UnsupportedValueError{reason: :frame}} =
+               Conversion.interval_to_range(~o"2026-06-15T09:00/2026-06-15T17:00")
+    end
+
     test "the error says why, and keeps the value it refused" do
       {:error, exception} = Conversion.interval_to_range(~o"1984?/2004")
 
@@ -67,29 +72,92 @@ defmodule Tempo.SQL.StorageContractTest do
 
   describe "what looks refusable but is not" do
     test "an ordinal date is the day it names" do
-      assert stored(~o"2026-181/2026-182") == {~U[2026-06-30 00:00:00Z], ~U[2026-07-02 00:00:00Z]}
+      assert stored(~o"2026-181/2026-182[Etc/UTC]") ==
+               {~U[2026-06-30 00:00:00Z], ~U[2026-07-02 00:00:00Z]}
     end
 
     test "a week date naming a day is that day" do
-      assert stored(~o"2026-W23-4/2026-W23-5") ==
+      assert stored(~o"2026-W23-4/2026-W23-5[Etc/UTC]") ==
                {~U[2026-06-04 00:00:00Z], ~U[2026-06-06 00:00:00Z]}
     end
 
     test "a week is the seven days from its Monday" do
       # 2026-W23 begins on Monday the 1st of June; through W25 is three
       # weeks, to the 22nd.
-      assert stored(~o"2026-W23/2026-W25") == {~U[2026-06-01 00:00:00Z], ~U[2026-06-22 00:00:00Z]}
+      assert stored(~o"2026-W23/2026-W25[Etc/UTC]") ==
+               {~U[2026-06-01 00:00:00Z], ~U[2026-06-22 00:00:00Z]}
+
       assert Date.beginning_of_week(~D[2026-06-04]) == ~D[2026-06-01]
     end
 
     test "a month is its days, read through" do
-      assert stored(~o"2026-02/2026-03") == {~U[2026-02-01 00:00:00Z], ~U[2026-04-01 00:00:00Z]}
+      assert stored(~o"2026-02/2026-03[Etc/UTC]") ==
+               {~U[2026-02-01 00:00:00Z], ~U[2026-04-01 00:00:00Z]}
+    end
+  end
+
+  describe "what a tsrange refuses to hold" do
+    test "a value in a zone, because a tsrange holds floating instants" do
+      assert {:error, %UnsupportedValueError{reason: :frame}} =
+               Conversion.interval_to_range(
+                 ~o"2026-06-15T09:00/2026-06-15T17:00[Europe/Paris]",
+                 :floating
+               )
+    end
+
+    test "a value at a time shift, for the same reason" do
+      assert {:error, %UnsupportedValueError{reason: :frame}} =
+               Conversion.interval_to_range(~o"2026-06-15T09:00Z/2026-06-15T17:00Z", :floating)
+    end
+
+    test "the error says which frame to store it on" do
+      {:error, exception} =
+        Conversion.interval_to_range(~o"2026-06-15T09:00Z/2026-06-15T17:00Z", :floating)
+
+      assert Exception.message(exception) =~ "frame: :utc"
+
+      {:error, exception} = Conversion.interval_to_range(~o"2026-06-15T09:00/2026-06-15T17:00")
+
+      assert Exception.message(exception) =~ "frame: :floating"
+    end
+
+    test "what a tstzrange refuses for its content, a tsrange refuses too" do
+      refusals = [
+        {~o"1984?/2004", :qualification},
+        {~o"5786-01-01/5786-06-01[u-ca=hebrew]", :non_gregorian_calendar},
+        {~o"T09/T17", :partial_resolution},
+        {~o"2026Y{6,8}M", :multi_valued_slot},
+        {~o"../..", :fully_unbounded}
+      ]
+
+      for {expression, reason} <- refusals do
+        assert {:error, %UnsupportedValueError{reason: ^reason}} =
+                 Conversion.interval_to_range(expression, :floating)
+      end
+    end
+  end
+
+  describe "what a tsrange holds" do
+    test "floating dates, weeks and months are the days they name" do
+      assert stored(~o"2026-181/2026-182", :floating) ==
+               {~N[2026-06-30 00:00:00], ~N[2026-07-02 00:00:00]}
+
+      assert stored(~o"2026-W23/2026-W25", :floating) ==
+               {~N[2026-06-01 00:00:00], ~N[2026-06-22 00:00:00]}
+
+      assert stored(~o"2026-02/2026-03", :floating) ==
+               {~N[2026-02-01 00:00:00], ~N[2026-04-01 00:00:00]}
+    end
+
+    test "floating times of day keep their clock reading" do
+      assert stored(~o"2026-06-15T09:00/2026-06-15T17:00", :floating) ==
+               {~N[2026-06-15 09:00:00], ~N[2026-06-15 17:00:00]}
     end
   end
 
   describe "endpoints arriving as NaiveDateTime" do
-    # Postgres hands back naive timestamps for a `tstzrange` when the
-    # connection has no time zone configured, so both shapes must load.
+    # Postgres hands back naive timestamps for a `tsrange`, a column on
+    # the floating frame, and they load as the floating values they are.
     defp naive_range(lower_inclusive, upper_inclusive) do
       %Postgrex.Range{
         lower: ~N[2027-06-15 09:00:00],
@@ -125,34 +193,54 @@ defmodule Tempo.SQL.StorageContractTest do
   end
 
   describe "a queryable range is the stretch an expression covers" do
-    defp queryable(expression) do
-      {:ok, range} = Conversion.interval_to_queryable_range(expression)
+    defp queryable(expression, frame \\ :utc) do
+      {:ok, range} = Conversion.interval_to_queryable_range(expression, frame)
       {range.lower, range.upper}
     end
 
     test "an open end is an unbounded range bound" do
-      assert queryable(~o"2027-06-15T09:00:00/..") == {~U[2027-06-15 09:00:00Z], :unbound}
-      assert queryable(~o"../2027-06-15") == {:unbound, ~U[2027-06-16 00:00:00Z]}
+      assert queryable(~o"2027-06-15T09:00:00Z/..") == {~U[2027-06-15 09:00:00Z], :unbound}
+      assert queryable(~o"../2027-06-15[Etc/UTC]") == {:unbound, ~U[2027-06-16 00:00:00Z]}
     end
 
     test "a recurrence runs from its first occurrence to the end of its last" do
-      assert queryable(~o"R5/2022-01-01/P1M") ==
+      assert queryable(~o"R5/2022-01-01/P1M[Etc/UTC]") ==
                {~U[2022-01-01 00:00:00Z], ~U[2022-06-01 00:00:00Z]}
     end
 
     test "a recurrence with no end runs on from its first occurrence" do
-      assert queryable(~o"R/2022-01-01/P1M") == {~U[2022-01-01 00:00:00Z], :unbound}
+      assert queryable(~o"R/2022-01-01/P1M[Etc/UTC]") == {~U[2022-01-01 00:00:00Z], :unbound}
     end
 
     test "a set runs from its earliest member to its latest, in any order" do
-      assert queryable(~o"{2026-06,2026-01}") ==
+      assert queryable(~o"{2026-06,2026-01}[Etc/UTC]") ==
                {~U[2026-01-01 00:00:00Z], ~U[2026-07-01 00:00:00Z]}
 
-      assert queryable(~o"{2026,2028/..}") == {~U[2026-01-01 00:00:00Z], :unbound}
+      assert queryable(~o"{2026,2028/..}[Etc/UTC]") == {~U[2026-01-01 00:00:00Z], :unbound}
     end
 
     test "a qualified expression is stored at the span it qualifies" do
-      assert queryable(~o"1984?/2004~") == {~U[1984-01-01 00:00:00Z], ~U[2005-01-01 00:00:00Z]}
+      assert queryable(~o"1984?/2004~[Etc/UTC]") ==
+               {~U[1984-01-01 00:00:00Z], ~U[2005-01-01 00:00:00Z]}
+    end
+
+    test "on the floating frame the stretch has naive bounds" do
+      assert queryable(~o"R5/2022-01-01/P1M", :floating) ==
+               {~N[2022-01-01 00:00:00], ~N[2022-06-01 00:00:00]}
+
+      assert queryable(~o"{2026-06,2026-01}", :floating) ==
+               {~N[2026-01-01 00:00:00], ~N[2026-07-01 00:00:00]}
+
+      assert queryable(~o"1984?/2004~", :floating) ==
+               {~N[1984-01-01 00:00:00], ~N[2005-01-01 00:00:00]}
+    end
+
+    test "an expression of the other frame is refused on either" do
+      assert {:error, %UnsupportedValueError{reason: :frame}} =
+               Conversion.interval_to_queryable_range(~o"R5/2022-01-01/P1M")
+
+      assert {:error, %UnsupportedValueError{reason: :frame}} =
+               Conversion.interval_to_queryable_range(~o"R5/2022-01-01/P1M[Etc/UTC]", :floating)
     end
 
     test "what has no place to query is refused" do

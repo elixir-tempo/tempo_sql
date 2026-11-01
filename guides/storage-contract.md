@@ -13,6 +13,8 @@ This is a reference document. Every claim here is enforced by `Tempo.SQL.Convers
 | **Plain range**      | `Tempo.Ecto.Interval` / `.IntervalSet` / `.Tempo`  | `tstzrange` / `tstzmultirange`     | The span only       |
 | **Composite**        | `Tempo.Ecto.TempoRange` / `.TempoMultirange`       | `tempo_range` / `tempo_multirange` | The whole expression |
 
+Each has a floating counterpart, for a column declared `frame: :floating` (see [The frame of a column](#the-frame-of-a-column)): `tsrange` / `tsmultirange`, and `tempo_floating_range` / `tempo_floating_multirange`.
+
 **Pick plain range when** the downstream workflow only cares about the span — start, end, overlap relationships. Queries are native Postgres operators. Minimal schema overhead.
 
 **Pick composite when** you need the expression back as it was written — qualifications, calendars other than the Gregorian, recurrences, zones, metadata, or the resolution a value was written to. The composite stores a queryable `tstzrange` *and* a `jsonb` meta column holding the expression's ISO 8601 text. Costs: a `CREATE TYPE` migration, a different column type, composite-aware query macros, and one extra column's worth of storage per row.
@@ -23,13 +25,28 @@ Most of the rest of this guide is about the plain-range mode, because the compos
 
 | Tempo expression                                                     | Ecto type                 | PostgreSQL column   |
 |----------------------------------------------------------------------|---------------------------|---------------------|
-| one span: a value (`~o"2026-06"`) or an interval                     | `Tempo.Ecto.Interval`     | `tstzrange`         |
-| a last span: a set, a bounded recurrence, a value that names several | `Tempo.Ecto.IntervalSet`  | `tstzmultirange`    |
-| one span, under the name older schemas use                           | `Tempo.Ecto.Tempo`        | `tstzrange`         |
+| one span: a value (`~o"2026-06"`) or an interval                     | `Tempo.Ecto.Interval`     | `tstzrange`, `tsrange` when floating |
+| a last span: a set, a bounded recurrence, a value that names several | `Tempo.Ecto.IntervalSet`  | `tstzmultirange`, `tsmultirange` when floating |
+| one span, under the name older schemas use                           | `Tempo.Ecto.Tempo`        | `tstzrange`, `tsrange` when floating |
 
-`tstzrange` is a timezone-aware range of two `timestamptz` values. `tstzmultirange` (PostgreSQL 14+) is an ordered, disjoint set of `tstzrange` values. Both follow the half-open `[lower, upper)` convention, which is the convention every Tempo span has underneath — so adjacency, ordering, and emptiness all compose cleanly across the boundary.
+`tstzrange` is a timezone-aware range of two `timestamptz` values, and `tsrange` a range of two `timestamp` values, which have no zone. `tstzmultirange` and `tsmultirange` (PostgreSQL 14+) are ordered, disjoint sets of them. Both follow the half-open `[lower, upper)` convention, which is the convention every Tempo span has underneath — so adjacency, ordering, and emptiness all compose cleanly across the boundary.
 
 An end written to a date is read through it, as it is said aloud: `~o"2026-06-15/2026-06-20"` is six days, and holds the 20th. It is stored as the instants it runs between, `[2026-06-15 00:00, 2026-06-21 00:00)`. An end written to the clock is a boundary: `~o"2026-06-15T09/2026-06-15T17"` is stored as `[09:00, 17:00)`. `Tempo.Interval.instants/1` gives the two instants any interval is stored as.
+
+## The frame of a column
+
+A Tempo value lies on one of two lines. A value in a zone (`[Europe/Paris]`) or at a time shift (`Z`, `+02:00`) is on the UTC line: it names instants every clock agrees on. A value with neither is floating: `~o"2026-06-15T09:00"` is nine in the morning wherever it is read, as a shop's opening hours are. Tempo never compares or combines values on two lines, and neither does a column.
+
+A column's `:frame` field option names its line. The default, `:utc`, is a `timestamptz` range, and holds a value on the UTC line as the UTC instants it is. `:floating` is a `timestamp` range, and holds a floating value as the wall-clock times it is:
+
+```elixir
+schema "shops" do
+  field :opening_hours, Tempo.Ecto.Interval, frame: :floating
+  field :last_delivery, Tempo.Ecto.Interval
+end
+```
+
+A value given to a column of the other frame is refused with the reason `:frame`: a floating value is not placed at UTC, and a zoned value does not lose its zone to become floating. The migration helpers take the same option, `add_interval :opening_hours, frame: :floating`.
 
 ## What a round-trip looks like
 
@@ -37,21 +54,24 @@ A minimal setup, three Tempo values, pipeline through the type module:
 
 ```elixir
 iex> import Tempo.Sigils
+iex> floating = Tempo.Ecto.Interval.cast_type(frame: :floating)
 iex> year = ~o"2026"
 iex> meeting = ~o"2026-06-15T09:00/2026-06-15T10:00"
 iex> offset = ~o"2026-06-15T09:00+02:00/2026-06-15T10:00+02:00"
-iex> {:ok, year_range} = Tempo.Ecto.Interval.dump(year)
-iex> {:ok, meeting_range} = Tempo.Ecto.Interval.dump(meeting)
+iex> {:ok, year_range} = Ecto.Type.dump(floating, year)
+iex> {:ok, meeting_range} = Ecto.Type.dump(floating, meeting)
 iex> {:ok, offset_range} = Tempo.Ecto.Interval.dump(offset)
-iex> Tempo.Ecto.Interval.load(year_range)
-{:ok, ~o"2026-01-01T00:00:00Z/2027-01-01T00:00:00Z"}
-iex> Tempo.Ecto.Interval.load(meeting_range)
-{:ok, ~o"2026-06-15T09:00:00Z/2026-06-15T10:00:00Z"}
+iex> Ecto.Type.load(floating, year_range)
+{:ok, ~o"2026-01-01T00:00:00/2027-01-01T00:00:00"}
+iex> Ecto.Type.load(floating, meeting_range)
+{:ok, ~o"2026-06-15T09:00:00/2026-06-15T10:00:00"}
 iex> Tempo.Ecto.Interval.load(offset_range)
 {:ok, ~o"2026-06-15T07:00:00Z/2026-06-15T08:00:00Z"}
+iex> Tempo.Ecto.Interval.dump(meeting)
+:error
 ```
 
-> *The year is **stored as the instants that bound it**, and loads back as an interval between them — the "it was just a year" fact is gone. The meeting comes back on the same instants, at UTC. The meeting at `+02:00` comes back as the same instants at UTC, two hours earlier on the clock.*
+> *The year is **stored as the times that bound it**, and loads back as an interval between them — the "it was just a year" fact is gone. The floating meeting comes back at the same times on the clock. The meeting at `+02:00` comes back as the same instants at UTC, two hours earlier on the clock. A column on the UTC line **refuses** the floating meeting.*
 
 That is the whole guide in one paragraph. The rest of this document makes each claim precise.
 
@@ -77,7 +97,7 @@ This is the most important loss and has its own section below. `~o"2026"` is sto
 
 ### 2. The zone
 
-An expression in a named zone, or at a time shift, is stored as the UTC instants it is: PostgreSQL's `tstzrange` keeps every value at UTC, and the zone's name is not stored. On load the expression is at UTC (`Z`) — the *instants* are kept, the "it was in `America/New_York`" fact is not. An expression with no zone, floating, is stored as though it were at UTC, and loads back at UTC.
+An expression in a named zone, or at a time shift, is stored as the UTC instants it is: PostgreSQL's `tstzrange` keeps every value at UTC, and the zone's name is not stored. On load the expression is at UTC (`Z`) — the *instants* are kept, the "it was in `America/New_York`" fact is not. A floating expression, in a floating column, has no zone to lose: it is stored and loaded as the times on the clock it is.
 
 ### 3. Metadata
 
@@ -96,6 +116,8 @@ The storage contract distinguishes between *dropped* (lost on store) and *reject
 * **A recurrence with no end.** `~o"R/2026-06-01/P1W"` has no last span, so no multirange holds it. Bound it to a window with `Tempo.to_interval/2` and `:within`, or store it in a composite column.
 
 * **Qualifications** (`:qualification`). `~o"1984?/2004"` has no Postgres-range analogue — ranges are precise, uncertainty is not. Callers who need to persist uncertainty should store the expression in a composite column, or the qualification in a sibling column.
+
+* **A value of the other frame** (`:frame`). A column on the UTC line refuses a floating value, which has no instant until it is given a zone, and a floating column refuses a value in a zone or at a time shift. Declare the column with the frame its values have, or give the value a zone with `Tempo.in_zone/2`.
 
 * **Calendars other than the Gregorian** (`:non_gregorian_calendar`). Values of the Hebrew, Persian or another calendar are rejected. The library does not convert for you; convert with `Tempo.to_calendar/2` before storing.
 
@@ -203,15 +225,17 @@ defmodule MyApp.Repo.Migrations.CreateTempoTypes do
 
   def up do
     create_tempo_types()
+    create_tempo_types(frame: :floating)
   end
 
   def down do
+    drop_tempo_types(frame: :floating)
     drop_tempo_types()
   end
 end
 ```
 
-This creates:
+The call with `frame: :floating` is needed only for floating composite columns. The first call creates:
 
 ```sql
 CREATE TYPE tempo_range AS (
@@ -226,6 +250,8 @@ CREATE TYPE tempo_multirange AS (
   meta       jsonb
 );
 ```
+
+The floating call creates `tempo_floating_range` and `tempo_floating_multirange`, the same with a `tsrange` and a `tsmultirange`.
 
 The three fields: `range`/`ranges` holds the queryable span; `resolution` records the column's declared resolution (for documentation); `meta` is a JSON document holding the expression's ISO 8601 text, its metadata, and each member's metadata for a set.
 
@@ -246,6 +272,10 @@ end
 
 schema "calendars" do
   field :busy_times, Tempo.Ecto.TempoMultirange
+end
+
+schema "shops" do
+  field :opening_hours, Tempo.Ecto.TempoRange, frame: :floating
 end
 ```
 
@@ -316,7 +346,7 @@ The guidance is: plain-range for the common case, composite when the schema has 
 
 | Fact about a Tempo expression    | Plain range            | Composite |
 |----------------------------------|------------------------|-----------|
-| Start and end instants           | Yes, at UTC on load    | Yes       |
+| Start and end instants           | Yes, at UTC, or floating in a floating column | Yes |
 | Open ends                        | Yes                    | Yes       |
 | The order of a set's spans       | Yes, touching spans joined | Yes   |
 | Zone                             | No, UTC on load        | Yes       |
@@ -327,5 +357,6 @@ The guidance is: plain-range for the common case, composite when the schema has 
 | Calendar other than the Gregorian | No (rejected)         | Yes       |
 | A value with no year             | No (rejected)          | No (rejected) |
 | Unbounded at both ends           | No (rejected)          | No (rejected) |
+| A value of the other frame       | No (rejected)          | No (rejected) |
 
 If all the caller cares about is the span — its start, end, and overlap relationships — the plain range round-trips faithfully. If the column holds data of one resolution, declare `:resolution` on the field. If the column holds mixed resolutions, or the expression matters, use a composite column.

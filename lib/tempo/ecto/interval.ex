@@ -2,7 +2,8 @@ if Code.ensure_loaded?(Ecto.Type) do
   defmodule Tempo.Ecto.Interval do
     @moduledoc """
     Ecto.ParameterizedType for persisting an interval as a
-    PostgreSQL `tstzrange` value.
+    PostgreSQL `tstzrange` value, or as a `tsrange` value when it is
+    floating.
 
     It takes any expression that is one span — an interval, or a value
     (`~o"2026-06"`) as the interval it names — and loads an interval.
@@ -19,6 +20,14 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     (or use `Tempo.SQL.Migration.add_interval/2`).
 
+    A field of floating values (with no zone and no time shift, such as
+    a shop's opening hours wherever it is) is declared on the floating
+    frame, and stored in a `tsrange`:
+
+        field :opening_hours, Tempo.Ecto.Interval, frame: :floating
+
+        add :opening_hours, :tsrange
+
     ## Options
 
       * `:resolution` — on load, truncate both endpoints to the
@@ -30,10 +39,20 @@ if Code.ensure_loaded?(Ecto.Type) do
 
             field :reporting_period, Tempo.Ecto.Interval, resolution: :year
 
+      * `:frame` — the line the column's instants lie on. `:utc`
+        (the default) stores a value in a zone or at a time shift as
+        the UTC instants it is, in a `tstzrange`; `:floating` stores a
+        value with neither, in a `tsrange`. A value of the other frame
+        is refused.
+
     ## Storage contract
 
     This type refuses to store values it cannot round-trip
     semantically. The `dump` callback returns `:error` for:
+
+      * A value of the other frame: a floating value for a column on
+        the UTC line, or a value in a zone or at a time shift for a
+        floating column.
 
       * An expression of several spans: a recurrence, a set, or a
         value naming several (`~o"2026Y{6,8}M"`). Store those as
@@ -79,6 +98,9 @@ if Code.ensure_loaded?(Ecto.Type) do
       component. One of `:year`, `:month`, `:day`, `:hour`, `:minute`,
       or `:second`. Defaults to `:second`.
 
+    * `:frame` is `:utc` (the default) for a `tstzrange` column or
+      `:floating` for a `tsrange` column.
+
     ### Returns
 
     * A `t:Ecto.ParameterizedType.opts/0` tuple.
@@ -86,10 +108,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     ### Examples
 
         iex> Tempo.Ecto.Interval.cast_type()
-        {:parameterized, {Tempo.Ecto.Interval, %{resolution: :second}}}
+        {:parameterized, {Tempo.Ecto.Interval, %{frame: :utc, resolution: :second}}}
 
-        iex> Tempo.Ecto.Interval.cast_type(resolution: :year)
-        {:parameterized, {Tempo.Ecto.Interval, %{resolution: :year}}}
+        iex> Tempo.Ecto.Interval.cast_type(resolution: :year, frame: :floating)
+        {:parameterized, {Tempo.Ecto.Interval, %{frame: :floating, resolution: :year}}}
 
     """
     @spec cast_type(keyword()) :: Ecto.Type.t()
@@ -98,6 +120,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
+    def type(%{frame: :floating}) do
+      :tsrange
+    end
+
     def type(_params) do
       :tstzrange
     end
@@ -109,7 +135,12 @@ if Code.ensure_loaded?(Ecto.Type) do
         |> Keyword.get(:resolution, :second)
         |> Conversion.validate_resolution!()
 
-      %{resolution: resolution}
+      frame =
+        options
+        |> Keyword.get(:frame, :utc)
+        |> Conversion.validate_frame!()
+
+      %{resolution: resolution, frame: frame}
     end
 
     @impl Ecto.ParameterizedType
@@ -136,7 +167,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second})
+    def load(value, loader \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def load(nil, _loader, _params) do
       {:ok, nil}
@@ -154,14 +185,14 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second})
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def dump(nil, _, _) do
       {:ok, nil}
     end
 
-    def dump(%Tempo{} = expression, _, _) do
-      case Conversion.interval_to_range(expression) do
+    def dump(%Tempo{} = expression, _, params) do
+      case Conversion.interval_to_range(expression, Map.get(params, :frame, :utc)) do
         {:ok, range} -> {:ok, range}
         {:error, _} -> :error
       end

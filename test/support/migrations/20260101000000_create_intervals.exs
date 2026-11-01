@@ -30,5 +30,22 @@ defmodule Tempo.SQL.Repo.Migrations.CreateIntervals do
       add(:owner, :string)
       add_tempo_multirange(:busy_times)
     end
+
+    # The floating frame: values with no zone and no time shift.
+    create_tempo_types(frame: :floating)
+
+    create table(:opening_hours) do
+      add(:shop, :string)
+      add_interval(:hours, frame: :floating)
+      add_interval_set(:weekly, frame: :floating)
+    end
+
+    create(index(:opening_hours, [:hours], using: :gist))
+
+    create table(:fidelity_opening_hours) do
+      add(:shop, :string)
+      add_tempo_range(:hours, frame: :floating)
+      add_tempo_multirange(:weekly, frame: :floating)
+    end
   end
 end

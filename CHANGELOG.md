@@ -4,6 +4,16 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 ## [v0.4.0] — Unreleased
 
+### Breaking changes
+
+* A floating value, with no zone and no time shift, is refused by a column on the UTC line (`UnsupportedValueError` reason `:frame`), where it was stored as though at UTC. Declare its column `frame: :floating`.
+
+### Added
+
+* A `:frame` option on every type and migration helper: `frame: :floating` stores floating values in `tsrange`, `tsmultirange`, `tempo_floating_range` and `tempo_floating_multirange` columns, refusing values in a zone or at a time shift.
+
+* `create_tempo_types/1` and `drop_tempo_types/1` take `frame: :floating` for the floating composite types; `Tempo.SQL.Conversion.valid_frames/0` and `validate_frame!/1`.
+
 ### Fixed
 
 * The stretch a composite type stores for a set or a recurrence is an `UnsupportedValueError` where an instant cannot be placed at UTC, where it raised a `MatchError`.

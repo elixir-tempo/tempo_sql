@@ -3,7 +3,8 @@ defmodule Tempo.SQL.Migration do
   Ecto migration helpers for the Tempo PostgreSQL range types.
 
   These helpers wrap the underlying Postgres types — `tstzrange`
-  and `tstzmultirange` — under Tempo-flavoured names, so a
+  and `tstzmultirange`, or `tsrange` and `tsmultirange` for a column
+  on the floating frame — under Tempo-flavoured names, so a
   migration reads in the same vocabulary as the schema:
 
       import Tempo.SQL.Migration
@@ -11,6 +12,7 @@ defmodule Tempo.SQL.Migration do
       create table(:meetings) do
         add_interval :window
         add_interval_set :busy, null: false
+        add_interval :opening_hours, frame: :floating
       end
 
       create_interval_index :meetings, :window
@@ -22,16 +24,25 @@ defmodule Tempo.SQL.Migration do
   """
 
   alias Ecto.Migration
+  alias Tempo.SQL.Conversion
 
   @doc """
-  Add a `tstzrange` column for a `Tempo.Ecto.Interval` field.
+  Add a `tstzrange` column for a `Tempo.Ecto.Interval` field, or a
+  `tsrange` column for one on the floating frame.
 
   ### Arguments
 
   * `field` is the column name as an atom.
 
-  * `options` are passed through to `Ecto.Migration.add/3` — for
-    example `null: false`, `default: ...`.
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) for a `tstzrange` column or
+    `:floating` for a `tsrange` column, as the field declares it.
+
+  * Every other option is passed through to `Ecto.Migration.add/3` —
+    for example `null: false`, `default: ...`.
 
   ### Returns
 
@@ -42,17 +53,19 @@ defmodule Tempo.SQL.Migration do
 
       add_interval :window
       add_interval :window, null: false
+      add_interval :opening_hours, frame: :floating
 
   """
   defmacro add_interval(field, options \\ []) do
     quote bind_quoted: [field: field, options: options] do
-      Migration.add(field, :tstzrange, options)
+      {type, options} = Tempo.SQL.Migration.column_type(:interval, options)
+      Migration.add(field, type, options)
     end
   end
 
   @doc """
   Add a `tstzmultirange` column for a `Tempo.Ecto.IntervalSet`
-  field.
+  field, or a `tsmultirange` column for one on the floating frame.
 
   Requires PostgreSQL 14 or later.
 
@@ -60,7 +73,14 @@ defmodule Tempo.SQL.Migration do
 
   * `field` is the column name as an atom.
 
-  * `options` are passed through to `Ecto.Migration.add/3`.
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) for a `tstzmultirange` column or
+    `:floating` for a `tsmultirange` column.
+
+  * Every other option is passed through to `Ecto.Migration.add/3`.
 
   ### Returns
 
@@ -75,12 +95,13 @@ defmodule Tempo.SQL.Migration do
   """
   defmacro add_interval_set(field, options \\ []) do
     quote bind_quoted: [field: field, options: options] do
-      Migration.add(field, :tstzmultirange, options)
+      {type, options} = Tempo.SQL.Migration.column_type(:interval_set, options)
+      Migration.add(field, type, options)
     end
   end
 
   @doc """
-  Create a GiST index on a `tstzrange` or `tstzmultirange` column.
+  Create a GiST index on a range or multirange column, of either frame.
 
   Range-operator queries (`@>`, `&&`, `-|-`) are only fast under a
   GiST index — this helper wraps `create index(..., using: :gist)`.
@@ -113,10 +134,10 @@ defmodule Tempo.SQL.Migration do
 
   @doc """
   Create the composite types used by `Tempo.Ecto.TempoRange` and
-  `Tempo.Ecto.TempoMultirange`.
+  `Tempo.Ecto.TempoMultirange` on one frame.
 
-  This should be run once, in an early migration, before any
-  schema declares a `tempo_range` or `tempo_multirange` column:
+  This should be run once for each frame a schema uses, in an early
+  migration, before any schema declares a column of the types:
 
       defmodule MyApp.Repo.Migrations.CreateTempoTypes do
         use Ecto.Migration
@@ -124,14 +145,16 @@ defmodule Tempo.SQL.Migration do
 
         def up do
           create_tempo_types()
+          create_tempo_types(frame: :floating)
         end
 
         def down do
+          drop_tempo_types(frame: :floating)
           drop_tempo_types()
         end
       end
 
-  Creates two PostgreSQL composite types:
+  On the UTC frame it creates two PostgreSQL composite types:
 
       CREATE TYPE tempo_range AS (
         range      tstzrange,
@@ -145,9 +168,20 @@ defmodule Tempo.SQL.Migration do
         meta       jsonb
       );
 
-  These are the round-trip-preserving counterparts to the plain
-  `tstzrange` / `tstzmultirange` columns used by
-  `Tempo.Ecto.Interval` and `Tempo.Ecto.IntervalSet`.
+  On the floating frame it creates `tempo_floating_range` and
+  `tempo_floating_multirange`, the same with a `tsrange` and a
+  `tsmultirange`.
+
+  These are the round-trip-preserving counterparts to the plain range
+  columns used by `Tempo.Ecto.Interval` and `Tempo.Ecto.IntervalSet`.
+
+  ### Arguments
+
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) or `:floating`.
 
   ### Returns
 
@@ -166,36 +200,29 @@ defmodule Tempo.SQL.Migration do
       end
 
   """
-  @spec create_tempo_types() :: :ok
-  def create_tempo_types do
-    Migration.execute(
-      """
-      CREATE TYPE tempo_range AS (
-        range      tstzrange,
-        resolution text,
-        meta       jsonb
-      )
-      """,
-      "DROP TYPE IF EXISTS tempo_range"
-    )
+  @spec create_tempo_types(keyword()) :: :ok
+  def create_tempo_types(options \\ []) do
+    for {name, definition} <- composite_types(options) do
+      Migration.execute(definition, "DROP TYPE IF EXISTS #{name}")
+    end
 
-    Migration.execute(
-      """
-      CREATE TYPE tempo_multirange AS (
-        ranges     tstzmultirange,
-        resolution text,
-        meta       jsonb
-      )
-      """,
-      "DROP TYPE IF EXISTS tempo_multirange"
-    )
+    :ok
   end
 
   @doc """
-  Drops the composite types created by `create_tempo_types/0`.
+  Drops the composite types created by `create_tempo_types/1` on one
+  frame.
 
   Intended for use in `down/0` callbacks. Fails if any column still
   uses either type — drop those columns first.
+
+  ### Arguments
+
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) or `:floating`.
 
   ### Returns
 
@@ -213,42 +240,59 @@ defmodule Tempo.SQL.Migration do
       end
 
   """
-  @spec drop_tempo_types() :: :ok
-  def drop_tempo_types do
-    Migration.execute(
-      "DROP TYPE IF EXISTS tempo_multirange",
-      """
-      CREATE TYPE tempo_multirange AS (
-        ranges     tstzmultirange,
-        resolution text,
-        meta       jsonb
-      )
-      """
-    )
+  @spec drop_tempo_types(keyword()) :: :ok
+  def drop_tempo_types(options \\ []) do
+    for {name, definition} <- Enum.reverse(composite_types(options)) do
+      Migration.execute("DROP TYPE IF EXISTS #{name}", definition)
+    end
 
-    Migration.execute(
-      "DROP TYPE IF EXISTS tempo_range",
-      """
-      CREATE TYPE tempo_range AS (
-        range      tstzrange,
-        resolution text,
-        meta       jsonb
-      )
-      """
+    :ok
+  end
+
+  # The composite types of a frame, each with the statement that creates it.
+  defp composite_types(options) do
+    frame =
+      options
+      |> Keyword.get(:frame, :utc)
+      |> Conversion.validate_frame!()
+
+    [
+      composite_type(column(:tempo_range, frame), "range", column(:interval, frame)),
+      composite_type(column(:tempo_multirange, frame), "ranges", column(:interval_set, frame))
+    ]
+  end
+
+  defp composite_type(name, field, range_type) do
+    definition = """
+    CREATE TYPE #{name} AS (
+      #{String.pad_trailing(field, 10)} #{range_type},
+      resolution text,
+      meta       jsonb
     )
+    """
+
+    {name, definition}
   end
 
   @doc """
-  Adds a `tempo_range` column for a `Tempo.Ecto.TempoRange` field.
+  Adds a `tempo_range` column for a `Tempo.Ecto.TempoRange` field, or
+  a `tempo_floating_range` column for one on the floating frame.
 
-  Requires `create_tempo_types/0` to have been run in an earlier
-  migration, or earlier in this one.
+  Requires `create_tempo_types/1`, for the column's frame, to have
+  been run in an earlier migration, or earlier in this one.
 
   ### Arguments
 
   * `field` is the column name as an atom.
 
-  * `options` are passed through to `Ecto.Migration.add/3`.
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) for a `tempo_range` column or
+    `:floating` for a `tempo_floating_range` column.
+
+  * Every other option is passed through to `Ecto.Migration.add/3`.
 
   ### Returns
 
@@ -263,22 +307,31 @@ defmodule Tempo.SQL.Migration do
   """
   defmacro add_tempo_range(field, options \\ []) do
     quote bind_quoted: [field: field, options: options] do
-      Migration.add(field, :tempo_range, options)
+      {type, options} = Tempo.SQL.Migration.column_type(:tempo_range, options)
+      Migration.add(field, type, options)
     end
   end
 
   @doc """
   Adds a `tempo_multirange` column for a `Tempo.Ecto.TempoMultirange`
-  field.
+  field, or a `tempo_floating_multirange` column for one on the
+  floating frame.
 
-  Requires `create_tempo_types/0` to have been run in an earlier
-  migration, or earlier in this one.
+  Requires `create_tempo_types/1`, for the column's frame, to have
+  been run in an earlier migration, or earlier in this one.
 
   ### Arguments
 
   * `field` is the column name as an atom.
 
-  * `options` are passed through to `Ecto.Migration.add/3`.
+  * `options` is a keyword list of options.
+
+  ### Options
+
+  * `:frame` is `:utc` (the default) for a `tempo_multirange` column or
+    `:floating` for a `tempo_floating_multirange` column.
+
+  * Every other option is passed through to `Ecto.Migration.add/3`.
 
   ### Returns
 
@@ -293,7 +346,49 @@ defmodule Tempo.SQL.Migration do
   """
   defmacro add_tempo_multirange(field, options \\ []) do
     quote bind_quoted: [field: field, options: options] do
-      Migration.add(field, :tempo_multirange, options)
+      {type, options} = Tempo.SQL.Migration.column_type(:tempo_multirange, options)
+      Migration.add(field, type, options)
     end
+  end
+
+  @doc false
+  # The column type a helper adds, on the frame its options name, and
+  # the options left for `Ecto.Migration.add/3`.
+  @spec column_type(atom(), keyword()) :: {atom(), keyword()}
+  def column_type(kind, options) do
+    {frame, options} = Keyword.pop(options, :frame, :utc)
+    {column(kind, Conversion.validate_frame!(frame)), options}
+  end
+
+  defp column(:interval, :utc) do
+    :tstzrange
+  end
+
+  defp column(:interval, :floating) do
+    :tsrange
+  end
+
+  defp column(:interval_set, :utc) do
+    :tstzmultirange
+  end
+
+  defp column(:interval_set, :floating) do
+    :tsmultirange
+  end
+
+  defp column(:tempo_range, :utc) do
+    :tempo_range
+  end
+
+  defp column(:tempo_range, :floating) do
+    :tempo_floating_range
+  end
+
+  defp column(:tempo_multirange, :utc) do
+    :tempo_multirange
+  end
+
+  defp column(:tempo_multirange, :floating) do
+    :tempo_floating_multirange
   end
 end

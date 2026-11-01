@@ -18,9 +18,14 @@ defmodule Tempo.SQL.EctoTypesTest do
   alias Tempo.Ecto.TempoRange
   alias Tempo.SQL.Meta
 
-  @second %{resolution: :second}
+  @second %{frame: :utc, resolution: :second}
+  @floating %{frame: :floating, resolution: :second}
 
   defp interval do
+    ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"
+  end
+
+  defp floating_interval do
     ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
   end
 
@@ -40,17 +45,37 @@ defmodule Tempo.SQL.EctoTypesTest do
 
   describe "init/1 validates the :resolution option" do
     test "defaults to second resolution" do
-      assert IntervalType.init([]) == %{resolution: :second}
-      assert TempoRange.init([]) == %{resolution: :second}
+      assert IntervalType.init([]) == %{frame: :utc, resolution: :second}
+      assert TempoRange.init([]) == %{frame: :utc, resolution: :second}
     end
 
     test "accepts a declared resolution" do
-      assert IntervalType.init(resolution: :year) == %{resolution: :year}
-      assert TempoMultirange.init(resolution: :day) == %{resolution: :day}
+      assert IntervalType.init(resolution: :year) == %{frame: :utc, resolution: :year}
+      assert TempoMultirange.init(resolution: :day) == %{frame: :utc, resolution: :day}
     end
 
     test "rejects a resolution that is not a time unit" do
       assert_raise ArgumentError, fn -> IntervalType.init(resolution: :fortnight) end
+    end
+  end
+
+  describe "init/1 validates the :frame option" do
+    test "defaults to the UTC line for every type" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert %{frame: :utc} = type.init([])
+      end
+    end
+
+    test "accepts the floating frame for every type" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert type.init(frame: :floating) == %{frame: :floating, resolution: :second}
+      end
+    end
+
+    test "rejects a frame it does not know, naming what was given" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert_raise ArgumentError, ~r/:local/, fn -> type.init(frame: :local) end
+      end
     end
   end
 
@@ -115,13 +140,31 @@ defmodule Tempo.SQL.EctoTypesTest do
 
     test "the declared resolution is recorded in the composite" do
       assert {:ok, {_range, "year", _meta}} =
-               TempoRange.dump(interval(), nil, %{resolution: :year})
+               TempoRange.dump(interval(), nil, %{frame: :utc, resolution: :year})
     end
 
     test "a value dumps as the span it denotes, its text in the metadata" do
-      assert {:ok, {range, "second", meta}} = TempoRange.dump(~o"2027Y", nil, @second)
+      assert {:ok, {range, "second", meta}} = TempoRange.dump(~o"2027Y[Etc/UTC]", nil, @second)
       assert {range.lower, range.upper} == {~U[2027-01-01 00:00:00Z], ~U[2028-01-01 00:00:00Z]}
+      assert {:ok, ~o"2027Y[Etc/UTC]"} = Meta.decode_interval(meta)
+    end
+
+    test "a floating value dumps on the floating frame as the span it denotes" do
+      assert {:ok, {range, "second", meta}} = TempoRange.dump(~o"2027Y", nil, @floating)
+      assert {range.lower, range.upper} == {~N[2027-01-01 00:00:00], ~N[2028-01-01 00:00:00]}
       assert {:ok, ~o"2027Y"} = Meta.decode_interval(meta)
+    end
+
+    test "a floating value is refused on the UTC line" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert type.dump(floating_interval(), nil, @second) == :error
+      end
+    end
+
+    test "a value at a time shift is refused on the floating frame" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert type.dump(interval(), nil, @floating) == :error
+      end
     end
 
     test "values of the wrong shape are rejected" do
@@ -155,7 +198,7 @@ defmodule Tempo.SQL.EctoTypesTest do
     test "a composite row with metadata is decoded from the metadata" do
       {:ok, {range, resolution, meta}} = TempoRange.dump(interval(), nil, @second)
 
-      # The metadata holds the expression as it was, with no zone.
+      # The metadata holds the expression as it was, at its time shift.
       assert {:ok, interval()} == TempoRange.load({range, resolution, meta}, nil, @second)
     end
 
@@ -180,24 +223,46 @@ defmodule Tempo.SQL.EctoTypesTest do
 
   describe "cast_type/1" do
     test "builds a parameterized type usable in a schema" do
-      assert {:parameterized, {TempoRange, %{resolution: :second}}} = TempoRange.cast_type()
+      assert {:parameterized, {TempoRange, %{frame: :utc, resolution: :second}}} =
+               TempoRange.cast_type()
 
-      assert {:parameterized, {IntervalType, %{resolution: :year}}} =
+      assert {:parameterized, {IntervalType, %{frame: :utc, resolution: :year}}} =
                IntervalType.cast_type(resolution: :year)
+
+      assert {:parameterized, {IntervalType, %{frame: :floating, resolution: :second}}} =
+               IntervalType.cast_type(frame: :floating)
+    end
+
+    test "raises for a frame it does not know" do
+      assert_raise ArgumentError, ~r/expected :frame to be one of/, fn ->
+        IntervalType.cast_type(frame: :local)
+      end
     end
   end
 
   describe "round-trip through dump and load" do
-    test "a loaded interval comes back grounded in UTC" do
-      # Plain-range mode is lossy in one direction: a floating value
-      # goes in and a UTC-grounded one comes out, because a `tstzrange`
-      # has no way to say "no zone". The storage-contract guide states
-      # this; the test pins it.
+    test "a floating interval is refused on the UTC line, never grounded there" do
+      # A `tstzrange` holds instants on the UTC line, and a floating
+      # value is not one: storing it as though at UTC would change what
+      # it means.
+      assert Tempo.floating?(floating_interval())
+      assert IntervalType.dump(floating_interval(), nil, @second) == :error
+    end
+
+    test "a floating interval comes back floating from the floating frame" do
+      {:ok, dumped} = IntervalType.dump(floating_interval(), nil, @floating)
+      {:ok, loaded} = IntervalType.load(dumped, nil, @floating)
+
+      assert Tempo.floating?(loaded)
+      assert loaded == floating_interval()
+    end
+
+    test "an interval at a time shift comes back on the UTC line" do
       {:ok, dumped} = IntervalType.dump(interval(), nil, @second)
       {:ok, loaded} = IntervalType.load(dumped, nil, @second)
 
-      assert Tempo.zoned?(loaded)
-      assert Tempo.floating?(interval())
+      refute Tempo.floating?(loaded)
+      assert loaded == interval()
     end
 
     test "the round-trip is stable — dumping a loaded value reproduces the range" do
@@ -210,11 +275,28 @@ defmodule Tempo.SQL.EctoTypesTest do
       assert second == first
     end
 
+    test "the floating round-trip is stable too" do
+      {:ok, first} = IntervalType.dump(floating_interval(), nil, @floating)
+      {:ok, loaded} = IntervalType.load(first, nil, @floating)
+      {:ok, second} = IntervalType.dump(loaded, nil, @floating)
+
+      assert second == first
+    end
+
     test "an interval set survives a dump/load cycle" do
       {:ok, dumped} = IntervalSetType.dump(interval_set(), nil, @second)
       {:ok, loaded} = IntervalSetType.load(dumped, nil, @second)
 
       assert Tempo.IntervalSet.count(loaded) == 1
+    end
+
+    test "a floating interval set survives a dump/load cycle as floating" do
+      floating_set = Tempo.IntervalSet.new!([floating_interval()])
+
+      {:ok, dumped} = IntervalSetType.dump(floating_set, nil, @floating)
+      {:ok, loaded} = IntervalSetType.load(dumped, nil, @floating)
+
+      assert Tempo.IntervalSet.members(loaded) == [floating_interval()]
     end
   end
 end

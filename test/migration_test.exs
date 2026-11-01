@@ -34,7 +34,10 @@ defmodule Tempo.SQL.MigrationTest do
   end
 
   defp drop_all do
-    for table <- ~w(migration_probe migration_probe_composite) do
+    tables =
+      ~w(migration_probe migration_probe_composite migration_probe_floating migration_probe_floating_composite)
+
+    for table <- tables do
       {:ok, _} = SQL.query(Repo, "DROP TABLE IF EXISTS #{table}", [])
     end
 
@@ -102,6 +105,38 @@ defmodule Tempo.SQL.MigrationTest do
     end
   end
 
+  defmodule FloatingRangeColumns do
+    @moduledoc false
+    use Ecto.Migration
+
+    import Tempo.SQL.Migration
+
+    def change do
+      create table(:migration_probe_floating) do
+        add_interval(:hours, frame: :floating)
+        add_interval(:required_hours, frame: :floating, null: false)
+        add_interval(:utc_window, frame: :utc)
+        add_interval_set(:weekly, frame: :floating)
+      end
+
+      create_interval_index(:migration_probe_floating, :hours)
+    end
+  end
+
+  defmodule FloatingCompositeColumns do
+    @moduledoc false
+    use Ecto.Migration
+
+    import Tempo.SQL.Migration
+
+    def change do
+      create table(:migration_probe_floating_composite) do
+        add_tempo_range(:hours, frame: :floating)
+        add_tempo_multirange(:weekly, frame: :floating)
+      end
+    end
+  end
+
   describe "add_interval/2 and add_interval_set/2" do
     setup do
       unboxed(fn ->
@@ -137,6 +172,93 @@ defmodule Tempo.SQL.MigrationTest do
 
     test "add_interval_set builds a tstzmultirange column" do
       unboxed(fn -> assert column_type("migration_probe", "busy_times") == "tstzmultirange" end)
+    end
+  end
+
+  describe "add_interval/2 and add_interval_set/2 on the floating frame" do
+    setup do
+      unboxed(fn ->
+        drop_all()
+        run(FloatingRangeColumns)
+      end)
+
+      :ok
+    end
+
+    test "add_interval with frame: :floating builds a tsrange column" do
+      unboxed(fn ->
+        assert column_type("migration_probe_floating", "hours") == "tsrange"
+      end)
+    end
+
+    test "add_interval with frame: :utc builds a tstzrange column" do
+      unboxed(fn ->
+        assert column_type("migration_probe_floating", "utc_window") == "tstzrange"
+      end)
+    end
+
+    test "add_interval_set with frame: :floating builds a tsmultirange column" do
+      unboxed(fn ->
+        assert column_type("migration_probe_floating", "weekly") == "tsmultirange"
+      end)
+    end
+
+    test "the other options still pass through to Ecto.Migration.add/3" do
+      unboxed(fn ->
+        {:ok, %{rows: [[nullable]]}} =
+          SQL.query(
+            Repo,
+            """
+            SELECT a.attnotnull
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            WHERE c.relname = 'migration_probe_floating' AND a.attname = 'required_hours'
+            """,
+            []
+          )
+
+        assert nullable == true
+      end)
+    end
+
+    test "a floating column takes a GiST index too" do
+      unboxed(fn ->
+        definitions = indexes("migration_probe_floating")
+
+        assert Enum.any?(definitions, &(&1 =~ "USING gist" and &1 =~ "hours"))
+      end)
+    end
+  end
+
+  describe "a frame the helpers do not know" do
+    test "each column helper raises, naming what was given" do
+      require Tempo.SQL.Migration
+
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.add_interval(:hours, frame: :local)
+      end
+
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.add_interval_set(:weekly, frame: :local)
+      end
+
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.add_tempo_range(:hours, frame: :local)
+      end
+
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.add_tempo_multirange(:weekly, frame: :local)
+      end
+    end
+
+    test "create_tempo_types/1 and drop_tempo_types/1 raise too" do
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.create_tempo_types(frame: :local)
+      end
+
+      assert_raise ArgumentError, ~r/:local/, fn ->
+        Tempo.SQL.Migration.drop_tempo_types(frame: :local)
+      end
     end
   end
 
@@ -196,6 +318,54 @@ defmodule Tempo.SQL.MigrationTest do
     end
   end
 
+  describe "create_tempo_types/1 on the floating frame and its composite helpers" do
+    setup do
+      unboxed(fn ->
+        drop_all()
+        run(FloatingCompositeColumns)
+      end)
+
+      :ok
+    end
+
+    test "add_tempo_range with frame: :floating builds a tempo_floating_range column" do
+      unboxed(fn ->
+        assert column_type("migration_probe_floating_composite", "hours") ==
+                 "tempo_floating_range"
+      end)
+    end
+
+    test "add_tempo_multirange with frame: :floating builds a tempo_floating_multirange column" do
+      unboxed(fn ->
+        assert column_type("migration_probe_floating_composite", "weekly") ==
+                 "tempo_floating_multirange"
+      end)
+    end
+
+    test "the floating composite types hold timestamp ranges" do
+      unboxed(fn ->
+        {:ok, %{rows: rows}} =
+          SQL.query(
+            Repo,
+            """
+            SELECT t.typname, a.attname, format_type(a.atttypid, a.atttypmod)
+            FROM pg_type t
+            JOIN pg_attribute a ON a.attrelid = t.typrelid
+            WHERE t.typname IN ('tempo_floating_range', 'tempo_floating_multirange')
+              AND a.attname IN ('range', 'ranges')
+            ORDER BY t.typname
+            """,
+            []
+          )
+
+        assert rows == [
+                 ["tempo_floating_multirange", "ranges", "tsmultirange"],
+                 ["tempo_floating_range", "range", "tsrange"]
+               ]
+      end)
+    end
+  end
+
   describe "drop_tempo_types/0" do
     test "removes the types create_tempo_types/0 made" do
       # The types are shared by every other test in the suite, so the
@@ -224,6 +394,26 @@ defmodule Tempo.SQL.MigrationTest do
       assert type_exists?("tempo_range")
       assert type_exists?("tempo_multirange")
     end
+
+    test "create_tempo_types(frame: :floating) put the floating pair there" do
+      assert type_exists?("tempo_floating_range")
+      assert type_exists?("tempo_floating_multirange")
+    end
+
+    test "dropping the floating pair leaves the UTC pair alone" do
+      {:error, :rolled_back} =
+        Repo.transaction(fn ->
+          SQL.query!(Repo, "DROP TYPE tempo_floating_multirange CASCADE", [])
+          SQL.query!(Repo, "DROP TYPE tempo_floating_range CASCADE", [])
+
+          refute type_exists?("tempo_floating_range")
+          assert type_exists?("tempo_range")
+
+          Repo.rollback(:rolled_back)
+        end)
+
+      assert type_exists?("tempo_floating_range")
+    end
   end
 
   describe "the helpers are reversible" do
@@ -237,6 +427,19 @@ defmodule Tempo.SQL.MigrationTest do
 
         Migrator.down(Repo, version, RangeColumns, log: false)
         assert column_type("migration_probe", "window") == nil
+      end)
+    end
+
+    test "a migration built from the floating column helpers rolls back cleanly" do
+      unboxed(fn ->
+        drop_all()
+        version = System.unique_integer([:positive])
+
+        Migrator.up(Repo, version, FloatingRangeColumns, log: false)
+        assert column_type("migration_probe_floating", "hours") == "tsrange"
+
+        Migrator.down(Repo, version, FloatingRangeColumns, log: false)
+        assert is_nil(column_type("migration_probe_floating", "hours"))
       end)
     end
   end

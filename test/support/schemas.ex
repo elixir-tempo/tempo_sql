@@ -37,3 +37,25 @@ defmodule Tempo.SQL.Test.FidelityCalendar do
     field(:busy_times, Tempo.Ecto.TempoMultirange)
   end
 end
+
+defmodule Tempo.SQL.Test.OpeningHours do
+  @moduledoc false
+  use Ecto.Schema
+
+  schema "opening_hours" do
+    field(:shop, :string)
+    field(:hours, Tempo.Ecto.Interval, frame: :floating)
+    field(:weekly, Tempo.Ecto.IntervalSet, frame: :floating)
+  end
+end
+
+defmodule Tempo.SQL.Test.FidelityOpeningHours do
+  @moduledoc false
+  use Ecto.Schema
+
+  schema "fidelity_opening_hours" do
+    field(:shop, :string)
+    field(:hours, Tempo.Ecto.TempoRange, frame: :floating)
+    field(:weekly, Tempo.Ecto.TempoMultirange, frame: :floating)
+  end
+end

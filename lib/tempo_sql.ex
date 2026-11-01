@@ -10,11 +10,12 @@ defmodule Tempo.SQL do
   The entry-point modules are:
 
     * `Tempo.Ecto.Interval` — stores an expression of one span (a
-      value, or an interval) as `tstzrange`.
+      value, or an interval) as `tstzrange`, or as `tsrange` for a
+      column declared `frame: :floating`.
 
     * `Tempo.Ecto.IntervalSet` — stores an expression with a last span
       (a set, a bounded recurrence, a value that names several) as
-      `tstzmultirange`, one range a span.
+      `tstzmultirange` (`tsmultirange` when floating), one range a span.
 
     * `Tempo.Ecto.Tempo` — `Tempo.Ecto.Interval` under the name it had
       for a bare value, kept so that schemas naming it go on working.

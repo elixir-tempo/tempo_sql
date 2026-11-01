@@ -8,9 +8,11 @@ defmodule Tempo.SQL.UnsupportedValueError do
   `:non_gregorian_calendar`, `:multi_valued_slot` (several spans where
   a range holds one), `:partial_resolution` (a value with no year),
   `:fully_unbounded` (`../..`), `:open_ended_member` (a recurrence
-  with no end, where a multirange needs a last span) and
+  with no end, where a multirange needs a last span),
   `:unsupported_endpoint` (a range bound, or a stretch, with no place
-  on the time line).
+  on the time line) and `:frame` (a floating value for a column on the
+  UTC line, or a value in a zone or at a time shift for a floating
+  column).
 
   """
 

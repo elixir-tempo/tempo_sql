@@ -21,6 +21,9 @@ if Code.ensure_loaded?(Ecto.Type) do
       * `:resolution` — as for `Tempo.Ecto.Interval`. With `:year`, a
         year loads as the interval from that year through itself.
 
+      * `:frame` — as for `Tempo.Ecto.Interval`: `:utc` (the default)
+        for a `tstzrange` column, `:floating` for a `tsrange` column.
+
     ## Round-trip caveat
 
     A stored `~o"2026Y"` loads back as the interval it names, not the
@@ -33,7 +36,6 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     alias Ecto.ParameterizedType
     alias Tempo.Ecto.Interval, as: IntervalType
-    alias Tempo.SQL.Conversion
 
     @doc """
     Builds the parameterized-type tuple for use outside a schema.
@@ -51,6 +53,9 @@ if Code.ensure_loaded?(Ecto.Type) do
       `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
       Defaults to `:second`.
 
+    * `:frame` is `:utc` (the default) for a `tstzrange` column or
+      `:floating` for a `tsrange` column.
+
     ### Returns
 
     * A `t:Ecto.ParameterizedType.opts/0` tuple.
@@ -58,10 +63,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     ### Examples
 
         iex> Tempo.Ecto.Tempo.cast_type()
-        {:parameterized, {Tempo.Ecto.Tempo, %{resolution: :second}}}
+        {:parameterized, {Tempo.Ecto.Tempo, %{frame: :utc, resolution: :second}}}
 
         iex> Tempo.Ecto.Tempo.cast_type(resolution: :day)
-        {:parameterized, {Tempo.Ecto.Tempo, %{resolution: :day}}}
+        {:parameterized, {Tempo.Ecto.Tempo, %{frame: :utc, resolution: :day}}}
 
     """
     @spec cast_type(keyword()) :: Ecto.Type.t()
@@ -70,18 +75,13 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def type(_params) do
-      :tstzrange
+    def type(params) do
+      IntervalType.type(params)
     end
 
     @impl Ecto.ParameterizedType
     def init(options) do
-      resolution =
-        options
-        |> Keyword.get(:resolution, :second)
-        |> Conversion.validate_resolution!()
-
-      %{resolution: resolution}
+      IntervalType.init(options)
     end
 
     @impl Ecto.ParameterizedType
@@ -90,12 +90,12 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second}) do
+    def load(value, loader \\ nil, params \\ %{resolution: :second, frame: :utc}) do
       IntervalType.load(value, loader, params)
     end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second}) do
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second, frame: :utc}) do
       IntervalType.dump(value, dumper, params)
     end
 

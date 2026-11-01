@@ -16,14 +16,19 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
   alias Tempo.Ecto.TempoMultirange
   alias Tempo.Ecto.TempoRange
 
-  @second %{resolution: :second}
+  @second %{frame: :utc, resolution: :second}
+  @floating %{frame: :floating, resolution: :second}
 
   defp morning do
-    ~o"2027-06-15T09:00:00/2027-06-15T10:00:00"
+    ~o"2027-06-15T09:00:00Z/2027-06-15T10:00:00Z"
   end
 
   defp afternoon do
-    ~o"2027-06-15T14:00:00/2027-06-15T15:00:00"
+    ~o"2027-06-15T14:00:00Z/2027-06-15T15:00:00Z"
+  end
+
+  defp opening_hours do
+    ~o"2027-06-15T07:00:00/2027-06-15T13:00:00"
   end
 
   defp range do
@@ -57,9 +62,10 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     test "a declared resolution is applied while casting a range" do
       # The span must survive truncation: a one-hour range written to the
       # day would end before it began, which is no interval.
-      {:ok, week} = IntervalType.dump(~o"2027-06-15/2027-06-21", nil, @second)
+      {:ok, week} = IntervalType.dump(~o"2027-06-15/2027-06-21[Etc/UTC]", nil, @second)
 
-      assert {:ok, ~o"2027Y6M15DZ/2027Y6M21DZ"} = IntervalType.cast(week, %{resolution: :day})
+      assert {:ok, ~o"2027Y6M15DZ/2027Y6M21DZ"} =
+               IntervalType.cast(week, %{frame: :utc, resolution: :day})
     end
   end
 
@@ -80,7 +86,7 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     end
 
     test "a list holding an open-ended member is a set with an unbounded member" do
-      assert {:ok, set} = IntervalSetType.cast([~o"2027-06-15/.."], @second)
+      assert {:ok, set} = IntervalSetType.cast([~o"2027-06-15/..[Etc/UTC]"], @second)
 
       assert {:ok, %Postgrex.Multirange{ranges: [range]}} =
                IntervalSetType.dump(set, nil, @second)
@@ -89,7 +95,7 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     end
 
     test "a recurrence with no end is refused by the plain set type" do
-      assert IntervalSetType.cast(~o"R/2027-06-15/P1D", @second) == :error
+      assert IntervalSetType.cast(~o"R/2027-06-15/P1D[Etc/UTC]", @second) == :error
     end
   end
 
@@ -118,10 +124,19 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     test "the fallback honours the declared resolution" do
       # Day-resolution members must span whole days, so this set is two
       # separate weeks.
-      weeks = Tempo.IntervalSet.new!([~o"2027-06-01/2027-06-07", ~o"2027-07-01/2027-07-07"])
+      weeks =
+        Tempo.IntervalSet.new!([
+          ~o"2027-06-01/2027-06-07[Etc/UTC]",
+          ~o"2027-07-01/2027-07-07[Etc/UTC]"
+        ])
+
       {:ok, multirange} = IntervalSetType.dump(weeks, nil, @second)
 
-      assert {:ok, set} = TempoMultirange.load({multirange, "day", nil}, nil, %{resolution: :day})
+      assert {:ok, set} =
+               TempoMultirange.load({multirange, "day", nil}, nil, %{
+                 frame: :utc,
+                 resolution: :day
+               })
 
       assert Tempo.IntervalSet.members(set) == [
                ~o"2027Y6M1DZ/2027Y6M7DZ",
@@ -153,17 +168,17 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     end
 
     test "builds a parameterized type usable in a schema" do
-      assert {:parameterized, {TempoType, %{resolution: :year}}} =
+      assert {:parameterized, {TempoType, %{frame: :utc, resolution: :year}}} =
                TempoType.cast_type(resolution: :year)
     end
   end
 
   describe "cast_type/1 on the remaining types" do
     test "each set type builds its parameterized form" do
-      assert {:parameterized, {IntervalSetType, %{resolution: :second}}} =
+      assert {:parameterized, {IntervalSetType, %{frame: :utc, resolution: :second}}} =
                IntervalSetType.cast_type()
 
-      assert {:parameterized, {TempoMultirange, %{resolution: :day}}} =
+      assert {:parameterized, {TempoMultirange, %{frame: :utc, resolution: :day}}} =
                TempoMultirange.cast_type(resolution: :day)
     end
   end
@@ -172,7 +187,7 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
     test "it comes back rendering as it went in" do
       # This is the fidelity the composite type exists for, and the
       # case the plain-range types refuse outright.
-      recurring = ~o"R5/2027-06-15/P1M"
+      recurring = ~o"R5/2027-06-15/P1M[Europe/Paris]"
 
       {:ok, dumped} = TempoRange.dump(recurring, nil, @second)
       {:ok, loaded} = TempoRange.load(dumped, nil, @second)
@@ -201,6 +216,108 @@ defmodule Tempo.SQL.EctoTypesEdgesTest do
       assert IntervalType.equal?(morning(), morning(), @second)
       refute IntervalType.equal?(morning(), afternoon(), @second)
       assert TempoType.equal?(~o"2027Y", ~o"2027Y", @second)
+    end
+  end
+
+  describe "each type on the floating frame" do
+    test "the column types are the timestamp ranges and the floating composites" do
+      assert IntervalType.type(@floating) == :tsrange
+      assert TempoType.type(@floating) == :tsrange
+      assert IntervalSetType.type(@floating) == :tsmultirange
+      assert TempoRange.type(@floating) == :tempo_floating_range
+      assert TempoMultirange.type(@floating) == :tempo_floating_multirange
+    end
+
+    test "the column types on the UTC line are the timestamptz ranges and composites" do
+      assert IntervalType.type(@second) == :tstzrange
+      assert TempoType.type(@second) == :tstzrange
+      assert IntervalSetType.type(@second) == :tstzmultirange
+      assert TempoRange.type(@second) == :tempo_range
+      assert TempoMultirange.type(@second) == :tempo_multirange
+    end
+
+    test "an interval dumps to naive bounds and loads back floating" do
+      for type <- [IntervalType, TempoType] do
+        assert {:ok, %Postgrex.Range{lower: ~N[2027-06-15 07:00:00]} = range} =
+                 type.dump(opening_hours(), nil, @floating)
+
+        assert {:ok, ~o"2027-06-15T07:00:00/2027-06-15T13:00:00"} =
+                 type.load(range, nil, @floating)
+      end
+    end
+
+    test "a set dumps to naive bounds and loads back floating" do
+      weekly =
+        Tempo.IntervalSet.new!([
+          opening_hours(),
+          ~o"2027-06-16T07:00:00/2027-06-16T13:00:00"
+        ])
+
+      assert {:ok, %Postgrex.Multirange{ranges: [first, _second]} = multirange} =
+               IntervalSetType.dump(weekly, nil, @floating)
+
+      assert first.lower == ~N[2027-06-15 07:00:00]
+      assert {:ok, loaded} = IntervalSetType.load(multirange, nil, @floating)
+      assert Tempo.IntervalSet.members(loaded) == Tempo.IntervalSet.members(weekly)
+    end
+
+    test "the composite range round-trips a floating value as it was written" do
+      assert {:ok, {%Postgrex.Range{lower: ~N[2027-06-01 00:00:00]}, _, _} = dumped} =
+               TempoRange.dump(~o"2027-06", nil, @floating)
+
+      assert {:ok, ~o"2027-06"} = TempoRange.load(dumped, nil, @floating)
+    end
+
+    test "the composite multirange round-trips a floating set" do
+      weekly = Tempo.IntervalSet.new!([opening_hours()])
+
+      assert {:ok, {%Postgrex.Multirange{}, _, _} = dumped} =
+               TempoMultirange.dump(weekly, nil, @floating)
+
+      assert {:ok, ^weekly} = TempoMultirange.load(dumped, nil, @floating)
+    end
+
+    test "a floating composite multirange with no metadata loads from its ranges as floating" do
+      {:ok, multirange} =
+        IntervalSetType.dump(Tempo.IntervalSet.new!([opening_hours()]), nil, @floating)
+
+      assert {:ok, set} = TempoMultirange.load({multirange, "second", nil}, nil, @floating)
+      assert Tempo.IntervalSet.members(set) == [opening_hours()]
+    end
+
+    test "each type refuses a floating value on the UTC line" do
+      for type <- [IntervalType, TempoType, IntervalSetType, TempoRange, TempoMultirange] do
+        assert type.dump(opening_hours(), nil, @second) == :error
+      end
+    end
+
+    test "each type refuses a value at a time shift on the floating frame" do
+      for type <- [IntervalType, TempoType, IntervalSetType, TempoRange, TempoMultirange] do
+        assert type.dump(morning(), nil, @floating) == :error
+      end
+    end
+
+    test "each type refuses a value in a zone on the floating frame" do
+      in_paris = ~o"2027-06-15T07:00/2027-06-15T13:00[Europe/Paris]"
+
+      for type <- [IntervalType, TempoType, IntervalSetType, TempoRange, TempoMultirange] do
+        assert type.dump(in_paris, nil, @floating) == :error
+      end
+    end
+
+    test "each type builds its floating parameterized form" do
+      for type <- [IntervalType, TempoType, IntervalSetType, TempoRange, TempoMultirange] do
+        assert {:parameterized, {^type, %{frame: :floating, resolution: :second}}} =
+                 type.cast_type(frame: :floating)
+      end
+    end
+
+    test "each type raises at declaration for a frame it does not know" do
+      for type <- [IntervalType, TempoType, IntervalSetType, TempoRange, TempoMultirange] do
+        assert_raise ArgumentError, ~r/expected :frame to be one of/, fn ->
+          type.cast_type(frame: :local)
+        end
+      end
     end
   end
 end

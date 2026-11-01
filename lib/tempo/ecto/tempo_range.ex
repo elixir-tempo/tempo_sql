@@ -12,6 +12,10 @@ if Code.ensure_loaded?(Ecto.Type) do
           meta       jsonb
         );
 
+    A floating expression, with no zone and no time shift, is kept in
+    `tempo_floating_range`, the same with a `tsrange` for its range: a
+    field declared with `frame: :floating`.
+
     Use this type when you care about round-trip fidelity: any
     expression with ISO 8601 text — a value, an interval, a
     recurrence, a set — round-trips as the same expression, including
@@ -26,6 +30,7 @@ if Code.ensure_loaded?(Ecto.Type) do
         import Tempo.SQL.Migration
         create_tempo_types()
 
+    (and `create_tempo_types(frame: :floating)` for floating columns).
     Then declare columns with `add_tempo_range/2` (or the raw
     `add :window, :tempo_range`).
 
@@ -33,6 +38,7 @@ if Code.ensure_loaded?(Ecto.Type) do
 
         schema "meetings" do
           field :window, Tempo.Ecto.TempoRange
+          field :opening_hours, Tempo.Ecto.TempoRange, frame: :floating
         end
 
     ## Query API
@@ -87,6 +93,10 @@ if Code.ensure_loaded?(Ecto.Type) do
       `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
       Defaults to `:second`.
 
+    * `:frame` is `:utc` (the default) for a `tempo_range` column, whose
+      expressions are in a zone or at a time shift, or `:floating` for
+      a `tempo_floating_range` column, whose expressions have neither.
+
     ### Returns
 
     * A `t:Ecto.ParameterizedType.opts/0` tuple.
@@ -94,10 +104,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     ### Examples
 
         iex> Tempo.Ecto.TempoRange.cast_type()
-        {:parameterized, {Tempo.Ecto.TempoRange, %{resolution: :second}}}
+        {:parameterized, {Tempo.Ecto.TempoRange, %{frame: :utc, resolution: :second}}}
 
-        iex> Tempo.Ecto.TempoRange.cast_type(resolution: :day)
-        {:parameterized, {Tempo.Ecto.TempoRange, %{resolution: :day}}}
+        iex> Tempo.Ecto.TempoRange.cast_type(resolution: :day, frame: :floating)
+        {:parameterized, {Tempo.Ecto.TempoRange, %{frame: :floating, resolution: :day}}}
 
     """
     @spec cast_type(keyword()) :: Ecto.Type.t()
@@ -106,6 +116,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
+    def type(%{frame: :floating}) do
+      :tempo_floating_range
+    end
+
     def type(_params) do
       :tempo_range
     end
@@ -117,7 +131,12 @@ if Code.ensure_loaded?(Ecto.Type) do
         |> Keyword.get(:resolution, :second)
         |> Conversion.validate_resolution!()
 
-      %{resolution: resolution}
+      frame =
+        options
+        |> Keyword.get(:frame, :utc)
+        |> Conversion.validate_frame!()
+
+      %{resolution: resolution, frame: frame}
     end
 
     @impl Ecto.ParameterizedType
@@ -137,7 +156,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second})
+    def load(value, loader \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def load(nil, _loader, _params) do
       {:ok, nil}
@@ -167,14 +186,14 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second})
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def dump(nil, _, _) do
       {:ok, nil}
     end
 
     def dump(%Tempo{} = expression, _, params) do
-      case composite(expression) do
+      case composite(expression, Map.get(params, :frame, :utc)) do
         {:ok, {range, meta}} -> {:ok, {range, Atom.to_string(params.resolution), meta}}
         {:error, _} -> :error
       end
@@ -184,8 +203,8 @@ if Code.ensure_loaded?(Ecto.Type) do
       :error
     end
 
-    defp composite(expression) do
-      with {:ok, range} <- Conversion.interval_to_queryable_range(expression),
+    defp composite(expression, frame) do
+      with {:ok, range} <- Conversion.interval_to_queryable_range(expression, frame),
            {:ok, meta} <- Meta.encode_interval(expression),
            do: {:ok, {range, IO.iodata_to_binary(meta)}}
     end

@@ -13,6 +13,10 @@ if Code.ensure_loaded?(Ecto.Type) do
           meta       jsonb
         );
 
+    A floating expression, with no zone and no time shift, is kept in
+    `tempo_floating_multirange`, the same with a `tsmultirange` for its
+    ranges: a field declared with `frame: :floating`.
+
     The meta column stores the set as a JSON document keyed by
     member index, so qualifications, recurrence state, and other
     per-member facts survive the round-trip.
@@ -45,6 +49,9 @@ if Code.ensure_loaded?(Ecto.Type) do
       `:year`, `:month`, `:day`, `:hour`, `:minute`, or `:second`.
       Defaults to `:second`.
 
+    * `:frame` is `:utc` (the default) for a `tempo_multirange` column,
+      or `:floating` for a `tempo_floating_multirange` column.
+
     ### Returns
 
     * A `t:Ecto.ParameterizedType.opts/0` tuple.
@@ -52,10 +59,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     ### Examples
 
         iex> Tempo.Ecto.TempoMultirange.cast_type()
-        {:parameterized, {Tempo.Ecto.TempoMultirange, %{resolution: :second}}}
+        {:parameterized, {Tempo.Ecto.TempoMultirange, %{frame: :utc, resolution: :second}}}
 
-        iex> Tempo.Ecto.TempoMultirange.cast_type(resolution: :day)
-        {:parameterized, {Tempo.Ecto.TempoMultirange, %{resolution: :day}}}
+        iex> Tempo.Ecto.TempoMultirange.cast_type(resolution: :day, frame: :floating)
+        {:parameterized, {Tempo.Ecto.TempoMultirange, %{frame: :floating, resolution: :day}}}
 
     """
     @spec cast_type(keyword()) :: Ecto.Type.t()
@@ -64,6 +71,10 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
+    def type(%{frame: :floating}) do
+      :tempo_floating_multirange
+    end
+
     def type(_params) do
       :tempo_multirange
     end
@@ -75,7 +86,12 @@ if Code.ensure_loaded?(Ecto.Type) do
         |> Keyword.get(:resolution, :second)
         |> Conversion.validate_resolution!()
 
-      %{resolution: resolution}
+      frame =
+        options
+        |> Keyword.get(:frame, :utc)
+        |> Conversion.validate_frame!()
+
+      %{resolution: resolution, frame: frame}
     end
 
     @impl Ecto.ParameterizedType
@@ -102,7 +118,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def load(value, loader \\ nil, params \\ %{resolution: :second})
+    def load(value, loader \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def load(nil, _loader, _params) do
       {:ok, nil}
@@ -132,14 +148,14 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @impl Ecto.ParameterizedType
-    def dump(value, dumper \\ nil, params \\ %{resolution: :second})
+    def dump(value, dumper \\ nil, params \\ %{resolution: :second, frame: :utc})
 
     def dump(nil, _, _) do
       {:ok, nil}
     end
 
     def dump(%Tempo{} = expression, _, params) do
-      case composite(expression) do
+      case composite(expression, Map.get(params, :frame, :utc)) do
         {:ok, {multirange, meta}} -> {:ok, {multirange, Atom.to_string(params.resolution), meta}}
         {:error, _} -> :error
       end
@@ -160,9 +176,9 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     # The ranges of the intervals an expression covers, none empty, and its meta.
-    defp composite(expression) do
+    defp composite(expression, frame) do
       with {:ok, [_ | _] = intervals} <- Conversion.intervals(expression),
-           {:ok, ranges} <- each(intervals, &Conversion.interval_to_queryable_range/1),
+           {:ok, ranges} <- each(intervals, &Conversion.interval_to_queryable_range(&1, frame)),
            {:ok, meta} <- Meta.encode_interval(expression) do
         {:ok, {%Postgrex.Multirange{ranges: ranges}, IO.iodata_to_binary(meta)}}
       end
