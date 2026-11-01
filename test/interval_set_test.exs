@@ -208,15 +208,17 @@ defmodule Tempo.Ecto.IntervalSetTest do
       assert :error = IntervalSet.dump(opening_hours(), nil, @default_params)
     end
 
-    test "a set with one floating member and one at a time shift is refused on either frame" do
-      mixed =
-        Tempo.IntervalSet.new!([
-          ~o"2026-06-15T07:00:00/2026-06-15T13:00:00",
-          ~o"2026-06-16T07:00:00Z/2026-06-16T13:00:00Z"
-        ])
+    test "a floating member beside one at a time shift is no set, so cast refuses them on either frame" do
+      # Tempo 2.3 holds a set to one frame (its law 4), so the set cannot be
+      # built for a column to refuse.
+      members = [
+        ~o"2026-06-15T07:00:00/2026-06-15T13:00:00",
+        ~o"2026-06-16T07:00:00Z/2026-06-16T13:00:00Z"
+      ]
 
-      assert :error = IntervalSet.dump(mixed, nil, @default_params)
-      assert :error = IntervalSet.dump(mixed, nil, @floating_params)
+      assert {:error, %Tempo.FrameError{}} = Tempo.IntervalSet.new(members)
+      assert :error = IntervalSet.cast(members, @default_params)
+      assert :error = IntervalSet.cast(members, @floating_params)
     end
   end
 end
