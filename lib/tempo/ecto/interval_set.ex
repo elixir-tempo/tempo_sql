@@ -121,25 +121,26 @@ if Code.ensure_loaded?(Ecto.Type) do
       {:ok, nil}
     end
 
-    def cast(%Tempo{} = expression, _params) do
-      case Conversion.intervals(expression) do
-        {:ok, _intervals} -> {:ok, expression}
-        {:error, _} -> :error
-      end
+    def cast(%Tempo{} = expression, params) do
+      expression
+      |> Conversion.intervals()
+      |> with_expression(expression)
+      |> on_frame(params)
+      |> Conversion.cast_result()
     end
 
     def cast(%Postgrex.Multirange{} = multirange, params) do
-      case multirange_to_set(multirange, params.resolution) do
-        {:ok, set} -> {:ok, set}
-        {:error, _} -> :error
-      end
+      multirange
+      |> multirange_to_set(params.resolution)
+      |> on_frame(params)
+      |> Conversion.cast_result()
     end
 
-    def cast(members, _params) when is_list(members) do
-      case IntervalSet.new(members) do
-        {:ok, set} -> {:ok, set}
-        {:error, _} -> :error
-      end
+    def cast(members, params) when is_list(members) do
+      members
+      |> IntervalSet.new()
+      |> on_frame(params)
+      |> Conversion.cast_result()
     end
 
     def cast(_, _params) do
@@ -180,6 +181,24 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     def dump(_, _, _) do
       :error
+    end
+
+    defp with_expression({:ok, _intervals}, expression) do
+      {:ok, expression}
+    end
+
+    defp with_expression(error, _expression) do
+      error
+    end
+
+    defp on_frame({:ok, set}, params) do
+      with :ok <- Conversion.on_frame(set, Map.get(params, :frame, :utc)) do
+        {:ok, set}
+      end
+    end
+
+    defp on_frame(error, _params) do
+      error
     end
 
     @impl Ecto.ParameterizedType

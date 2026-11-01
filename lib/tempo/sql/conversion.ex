@@ -371,6 +371,73 @@ defmodule Tempo.SQL.Conversion do
   end
 
   @doc """
+  Checks that an expression lies on a column's frame: on the UTC line,
+  in a zone or at a time shift, for `:utc`, or floating, with a year and
+  neither, for `:floating`.
+
+  The frame is read from the instants the expression would be stored
+  as, so a value passes as `interval_to_queryable_range/2` would place it.
+  An expression with no place on the time line, such as one with no
+  year, has no frame to check; the encoders refuse it when it is stored.
+
+  ### Arguments
+
+  * `expression` is a `t:Tempo.t/0`.
+
+  * `frame` is `:utc` or `:floating`.
+
+  ### Returns
+
+  * `:ok` when the expression is on the frame, or on a cycle.
+
+  * `{:error, exception}`, a `t:Tempo.SQL.UnsupportedValueError.t/0` with
+    the reason `:frame`, when it is on the other frame, or an
+    `ArgumentError` when `frame` is not one of `valid_frames/0`.
+
+  ### Examples
+
+      iex> Tempo.SQL.Conversion.on_frame(~o"2027-06-15T09:00Z", :utc)
+      :ok
+
+      iex> {:error, error} = Tempo.SQL.Conversion.on_frame(~o"2027-06-15T09:00", :utc)
+      iex> error.reason
+      :frame
+
+      iex> Tempo.SQL.Conversion.on_frame(~o"T09/T17", :floating)
+      :ok
+
+  """
+  @spec on_frame(Tempo.t(), frame()) :: :ok | {:error, UnsupportedValueError.t() | Exception.t()}
+  def on_frame(%Tempo{} = expression, frame) when frame in @frames do
+    case interval_to_queryable_range(expression, frame) do
+      {:error, %UnsupportedValueError{reason: :frame}} = error -> error
+      _placed_or_unplaced -> :ok
+    end
+  end
+
+  def on_frame(%Tempo{}, frame) do
+    {:error, frame_argument_error(frame)}
+  end
+
+  @doc false
+  # What an Ecto type's `cast/2` returns for a result: a value of the other
+  # frame is a changeset error that says which frame to declare, and any
+  # other refusal is `:error`, as Ecto's own types answer.
+  @spec cast_result({:ok, term()} | {:error, term()}) ::
+          {:ok, term()} | :error | {:error, keyword()}
+  def cast_result({:ok, value}) do
+    {:ok, value}
+  end
+
+  def cast_result({:error, %UnsupportedValueError{reason: :frame} = exception}) do
+    {:error, message: Exception.message(exception)}
+  end
+
+  def cast_result({:error, _reason}) do
+    :error
+  end
+
+  @doc """
   Truncates a value to the given resolution, dropping all finer
   components.
 

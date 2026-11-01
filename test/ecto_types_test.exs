@@ -11,6 +11,7 @@ defmodule Tempo.SQL.EctoTypesTest do
 
   import Tempo.Sigils
 
+  alias Ecto.Changeset
   alias Tempo.Ecto.Interval, as: IntervalType
   alias Tempo.Ecto.IntervalSet, as: IntervalSetType
   alias Tempo.Ecto.Tempo, as: TempoType
@@ -92,13 +93,43 @@ defmodule Tempo.SQL.EctoTypesTest do
     end
 
     test "a value casts to the interval it denotes for a plain range" do
-      assert IntervalType.cast(~o"2027Y", @second) == {:ok, ~o"2027Y/2027Y"}
+      assert IntervalType.cast(~o"2027Y", @floating) == {:ok, ~o"2027Y/2027Y"}
     end
 
     test "a composite keeps any expression as it was given" do
-      assert TempoRange.cast(~o"2027Y", @second) == {:ok, ~o"2027Y"}
-      assert TempoRange.cast(~o"{2027,2029}Y", @second) == {:ok, ~o"{2027,2029}Y"}
-      assert TempoMultirange.cast(~o"R3/2027-06-01/P1W", @second) == {:ok, ~o"R3/2027-06-01/P1W"}
+      assert TempoRange.cast(~o"2027Y", @floating) == {:ok, ~o"2027Y"}
+      assert TempoRange.cast(~o"{2027,2029}Y", @floating) == {:ok, ~o"{2027,2029}Y"}
+
+      assert TempoMultirange.cast(~o"R3/2027-06-01/P1W", @floating) ==
+               {:ok, ~o"R3/2027-06-01/P1W"}
+    end
+
+    test "every type refuses a value of the other frame as a changeset error" do
+      for type <- [IntervalType, IntervalSetType, TempoType, TempoRange, TempoMultirange] do
+        assert {:error, message: utc_message} = type.cast(floating_interval(), @second)
+        assert utc_message =~ "frame: :floating"
+
+        assert {:error, message: floating_message} = type.cast(interval(), @floating)
+        assert floating_message =~ "frame: :utc"
+      end
+    end
+
+    test "a value with no year passes cast on either frame, and is refused when stored" do
+      assert {:ok, _cycle} = TempoRange.cast(~o"T09/T17", @second)
+      assert {:ok, _cycle} = TempoRange.cast(~o"T09/T17", @floating)
+      assert TempoRange.dump(~o"T09/T17", nil, @second) == :error
+    end
+
+    test "a changeset reports the frame refusal on the field" do
+      types = %{window: TempoRange.cast_type()}
+
+      changeset =
+        {%{}, types}
+        |> Changeset.cast(%{window: floating_interval()}, [:window])
+
+      refute changeset.valid?
+      assert {message, _details} = changeset.errors[:window]
+      assert message =~ "frame: :floating"
     end
 
     test "an expression of several spans is rejected by a plain single-range type" do

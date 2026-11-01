@@ -13,6 +13,8 @@ This is a reference document. Every claim here is enforced by `Tempo.SQL.Convers
 | **Plain range**      | `Tempo.Ecto.Interval` / `.IntervalSet` / `.Tempo`  | `tstzrange` / `tstzmultirange`     | The span only       |
 | **Composite**        | `Tempo.Ecto.TempoRange` / `.TempoMultirange`       | `tempo_range` / `tempo_multirange` | The whole expression |
 
+On SQLite, which has no range type, `Tempo.Ecto.SQLite.TempoRange` keeps the whole expression as JSON beside integer bounds; the [SQLite guide](sqlite.md) covers it.
+
 Each has a floating counterpart, for a column declared `frame: :floating` (see [The frame of a column](#the-frame-of-a-column)): `tsrange` / `tsmultirange`, and `tempo_floating_range` / `tempo_floating_multirange`.
 
 **Pick plain range when** the downstream workflow only cares about the span — start, end, overlap relationships. Queries are native Postgres operators. Minimal schema overhead.
@@ -46,7 +48,7 @@ schema "shops" do
 end
 ```
 
-A value given to a column of the other frame is refused with the reason `:frame`: a floating value is not placed at UTC, and a zoned value does not lose its zone to become floating. The migration helpers take the same option, `add_interval :opening_hours, frame: :floating`.
+A value given to a column of the other frame is refused with the reason `:frame`: a floating value is not placed at UTC, and a zoned value does not lose its zone to become floating. The refusal comes at `cast/2`, as a changeset error on the field that names the frame to declare, and again at `dump/3` for a value that reaches the repository without a changeset. The migration helpers take the same option, `add_interval :opening_hours, frame: :floating`.
 
 ## What a round-trip looks like
 

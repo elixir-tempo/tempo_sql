@@ -2,7 +2,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ex_tempo_sql.svg)](https://hex.pm/packages/ex_tempo_sql)
 
-Ecto types, query macros and migration helpers that store [Tempo](https://hexdocs.pm/ex_tempo) expressions in PostgreSQL `tstzrange` and `tstzmultirange` columns, or `tsrange` and `tsmultirange` columns for floating values.
+Ecto types, query macros and migration helpers that store [Tempo](https://hexdocs.pm/ex_tempo) expressions in PostgreSQL `tstzrange` and `tstzmultirange` columns, or `tsrange` and `tsmultirange` columns for floating values, and in SQLite as JSON with integer bounds.
 
 Tempo models time as intervals, not instants. PostgreSQL models the same shape natively — a `tstzrange` **is** a bounded span with the half-open `[lower, upper)` convention, and `tstzmultirange` (PG 14+) is a set of disjoint spans. `tempo_sql` is the adapter between them: a Tempo interval dumps straight to a Postgrex range, loads straight back, and takes part in Postgres range queries (`@>`, `&&`, `-|-`) as a first-class value.
 
@@ -14,6 +14,8 @@ Tempo models time as intervals, not instants. PostgreSQL models the same shape n
 
 * **Whole expressions** — the composite `tempo_range` and `tempo_multirange` types keep an expression as it was written, its resolution, qualifications, recurrence, calendar, zone and metadata, beside the range it covers.
 
+* **SQLite** — `Tempo.Ecto.SQLite.TempoRange` keeps an expression whole in a `TEXT` column beside the integer bounds it covers, queried by `Tempo.Ecto.SQLite.QueryAPI` with the same Allen-named macros and indexed by expression indexes. No extension is loaded.
+
 * **Allen-named queries** — `Tempo.Ecto.QueryAPI` and `Tempo.Ecto.QueryAPI.Composite` give `contains/2`, `overlaps/2`, `meets/2`, `strictly_before/2` and `strictly_after/2` over the range operators.
 
 * **Migration helpers** — `Tempo.SQL.Migration` adds the columns, their GiST indexes and the composite types.
@@ -22,7 +24,7 @@ Tempo models time as intervals, not instants. PostgreSQL models the same shape n
 
 ## Supported Elixir and OTP versions
 
-Tempo SQL supports **Elixir 1.17** and later on **Erlang/OTP 27** and later, inherited from Tempo, with **PostgreSQL 14** and later for `tstzmultirange` (`tstzrange` alone works from PostgreSQL 9.2).
+Tempo SQL supports **Elixir 1.17** and later on **Erlang/OTP 27** and later, inherited from Tempo, with **PostgreSQL 14** and later for `tstzmultirange` (`tstzrange` alone works from PostgreSQL 9.2), and **SQLite 3.38** and later through `ecto_sqlite3`.
 
 ## Installation
 
@@ -32,7 +34,7 @@ Add `ex_tempo_sql` to the dependencies in `mix.exs`:
 def deps do
   [
     {:ex_tempo, "~> 2.1"},
-    {:ex_tempo_sql, "~> 0.3"},
+    {:ex_tempo_sql, "~> 0.4"},
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.19"}
   ]
@@ -97,7 +99,7 @@ iex> Repo.all(from m in MyApp.Meeting, where: overlaps(m.window, ^search), selec
 ["Standup"]
 ```
 
-> *The meetings whose **window overlaps** the half hour from 9:30.*
+> *The meetings whose **window overlaps** the quarter hour from half past nine.*
 
 ## Ecto types
 
@@ -131,7 +133,7 @@ schema "shops" do
 end
 ```
 
-A floating value given to a UTC column, or a zoned one to a floating column, is refused: Tempo does not compare or combine values of two frames, so neither is placed on the other's line.
+A floating value given to a UTC column, or a zoned one to a floating column, is refused — by `Ecto.Changeset.cast/4` as an error on the field that names the frame to declare, and by `dump` for a value inserted without a changeset. Tempo does not compare or combine values of two frames, so neither is placed on the other's line.
 
 ### The `:resolution` field option
 
@@ -210,13 +212,32 @@ For the full mapping — what is kept, what is dropped, what is refused — see 
 
 A plain range keeps the span and nothing else. A loaded value is Gregorian, at UTC or floating as its column is, its ends to the second or to the column's `:resolution`. Lost on the way are the expression's metadata, its zone (an expression in a zone comes back at UTC), and the resolution it was written to. The composite types keep all of these.
 
+## SQLite
+
+SQLite has no range type, so `Tempo.Ecto.SQLite.TempoRange` stores an expression whole in a `TEXT` column, as a JSON document holding its ISO 8601 text beside the bounds of the time it covers, in whole seconds. Add `{:ecto_sqlite3, "~> 0.26"}` to the dependencies, then:
+
+```elixir
+create table(:meetings) do
+  add_tempo_range :window          # Tempo.SQL.SQLite.Migration
+end
+
+create_tempo_range_index :meetings, :window
+
+{:ok, quarter_hour} = Tempo.Ecto.SQLite.QueryAPI.probe(~o"2026-06-15T09:30Z/2026-06-15T09:45Z")
+Repo.all(from m in Meeting, where: overlaps(m.window, ^quarter_hour), select: m.name)
+```
+
+The macros answer as the PostgreSQL range operators do, and the `:frame` option works as it does there. See the [SQLite guide](https://hexdocs.pm/ex_tempo_sql/sqlite.html).
+
 ## Testing against a live database
 
-The test suite needs a PostgreSQL 14+ instance. `config/test.exs` connects to the database `tempo_sql_test` as `PGUSER` (else the current user), with `PGPASSWORD`, on `PGHOST` (else `localhost`). `mix test` is aliased to run `ecto.drop`, `ecto.create` and `ecto.migrate` before the suite.
+The test suite needs a PostgreSQL 14+ instance. `config/test.exs` connects to the database `tempo_sql_test` as `PGUSER` (else the current user), with `PGPASSWORD`, on `PGHOST` (else `localhost`). The SQLite tests use a file in the system's temporary directory and need no server. `mix test` is aliased to run `ecto.drop`, `ecto.create` and `ecto.migrate` for both before the suite.
 
 ## Documentation
 
 * [Storage contract](https://hexdocs.pm/ex_tempo_sql/storage-contract.html) — how each expression maps to a range, what survives a round trip, what is refused, and the composite types.
+
+* [SQLite](https://hexdocs.pm/ex_tempo_sql/sqlite.html) — the SQLite type, what its column holds, its query macros and its indexes.
 
 * [Changelog](https://hexdocs.pm/ex_tempo_sql/changelog.html) — release history.
 
@@ -224,4 +245,4 @@ Full API documentation is available on [HexDocs](https://hexdocs.pm/ex_tempo_sql
 
 ## License
 
-The code is licensed under the Apache License 2.0; [LICENSE.md](https://github.com/elixir-tempo/tempo_sql/blob/v0.3.0/LICENSE.md) gives it.
+The code is licensed under the Apache License 2.0; [LICENSE.md](https://github.com/elixir-tempo/tempo_sql/blob/v0.4.0/LICENSE.md) gives it.

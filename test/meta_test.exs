@@ -237,6 +237,12 @@ defmodule Tempo.SQL.MetaTest do
   end
 
   describe "decode_interval/1 refuses meta it cannot trust" do
+    test "text that is no JSON, or more than one document, is an error, not a crash" do
+      assert {:error, %ErlangError{}} = Meta.decode_interval(~s({"v":3,"expression":))
+      assert {:error, %ErlangError{}} = Meta.decode_interval("")
+      assert {:error, %ArgumentError{}} = Meta.decode_interval(~s({"v":3} {"v":3}))
+    end
+
     test "a recurrence that is not a count" do
       assert {:error, {:invalid_recurrence, "often"}} =
                Meta.decode_interval(~s({"from":"2026","to":"2027","recurrence":"often"}))

@@ -7,6 +7,7 @@ defmodule Tempo.Ecto.TempoTest do
 
   @default_params %{frame: :utc, resolution: :second}
   @floating_params %{frame: :floating, resolution: :second}
+  @floating_params %{frame: :floating, resolution: :second}
 
   defp stored(expression, params \\ @default_params) do
     {:ok, range} = EctoTempo.dump(expression, nil, params)
@@ -52,7 +53,12 @@ defmodule Tempo.Ecto.TempoTest do
 
   describe "cast/2" do
     test "makes a value the interval it denotes" do
-      assert {:ok, ~o"2026-06/2026-06"} = EctoTempo.cast(~o"2026-06", @default_params)
+      assert {:ok, ~o"2026-06/2026-06"} = EctoTempo.cast(~o"2026-06", @floating_params)
+    end
+
+    test "refuses a floating value for a column on the UTC line, saying which frame to declare" do
+      assert {:error, message: message} = EctoTempo.cast(~o"2026-06", @default_params)
+      assert message =~ "frame: :floating"
     end
 
     test "accepts a Postgrex.Range" do

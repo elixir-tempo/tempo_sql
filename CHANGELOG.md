@@ -2,7 +2,7 @@
 
 All notable changes to `ex_tempo_sql` are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [v0.4.0] — Unreleased
+## [v0.4.0] — 2026-11-01
 
 ### Breaking changes
 
@@ -12,9 +12,17 @@ All notable changes to `ex_tempo_sql` are documented here, following [Keep a Cha
 
 * A `:frame` option on every type and migration helper: `frame: :floating` stores floating values in `tsrange`, `tsmultirange`, `tempo_floating_range` and `tempo_floating_multirange` columns, refusing values in a zone or at a time shift.
 
+* SQLite storage: `Tempo.Ecto.SQLite.TempoRange` keeps an expression whole in a `TEXT` column as JSON beside its integer bounds to the second, with `Tempo.Ecto.SQLite.QueryAPI` (the five Allen-named macros and `probe/2`) and `Tempo.SQL.SQLite.Migration`.
+
+* `Tempo.SQL.JSON.decode/1` returns an error for text that is not one JSON document, where `decode!/1` raises.
+
+* `cast/2` refuses a value of the other frame as a changeset error naming the frame to declare; `Tempo.SQL.Conversion.on_frame/2` is the check.
+
 * `create_tempo_types/1` and `drop_tempo_types/1` take `frame: :floating` for the floating composite types; `Tempo.SQL.Conversion.valid_frames/0` and `validate_frame!/1`.
 
 ### Fixed
+
+* A composite `meta` value that is not JSON loads as an error, where `Tempo.SQL.Meta.decode_interval/1` raised.
 
 * The stretch a composite type stores for a set or a recurrence is an `UnsupportedValueError` where an instant cannot be placed at UTC, where it raised a `MatchError`.
 

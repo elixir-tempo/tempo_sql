@@ -7,6 +7,7 @@ defmodule Tempo.Ecto.IntervalSetTest do
 
   @default_params %{frame: :utc, resolution: :second}
   @floating_params %{frame: :floating, resolution: :second}
+  @floating_params %{frame: :floating, resolution: :second}
 
   defp half_open(lower, upper) do
     %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
@@ -134,7 +135,8 @@ defmodule Tempo.Ecto.IntervalSetTest do
     test "accepts a bounded recurrence unchanged" do
       weekly = ~o"R3/2026-06-01/P1W"
 
-      assert {:ok, ^weekly} = IntervalSet.cast(weekly, @default_params)
+      assert {:ok, ^weekly} = IntervalSet.cast(weekly, @floating_params)
+      assert {:error, message: _message} = IntervalSet.cast(weekly, @default_params)
     end
 
     test "rejects a recurrence with no end, and what is not a set" do

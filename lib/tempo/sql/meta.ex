@@ -52,6 +52,7 @@ defmodule Tempo.SQL.Meta do
   alias Tempo.Interval
   alias Tempo.IntervalSet
   alias Tempo.RecurrenceSet
+  alias Tempo.SQL.JSON, as: StorageJSON
 
   @current_version 3
 
@@ -154,8 +155,7 @@ defmodule Tempo.SQL.Meta do
   """
   @spec decode_json(binary()) :: term()
   def decode_json(binary) when is_binary(binary) do
-    {decoded, :ok, _rest} = :json.decode(binary, :ok, @decode_options)
-    decoded
+    StorageJSON.decode!(binary)
   end
 
   @doc """
@@ -245,9 +245,10 @@ defmodule Tempo.SQL.Meta do
   """
   @spec decode_interval(String.t() | map()) :: {:ok, Tempo.t()} | {:error, term()}
   def decode_interval(json) when is_binary(json) do
-    case :json.decode(json, :ok, @decode_options) do
-      {map, :ok, _rest} when is_map(map) -> decode_interval(map)
-      {other, :ok, _rest} -> {:error, {:invalid_meta_shape, other}}
+    case StorageJSON.decode(json) do
+      {:ok, map} when is_map(map) -> decode_interval(map)
+      {:ok, other} -> {:error, {:invalid_meta_shape, other}}
+      {:error, _exception} = error -> error
     end
   end
 

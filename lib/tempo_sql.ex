@@ -24,6 +24,11 @@ defmodule Tempo.SQL do
       any expression losslessly, as the span it covers (or the spans)
       beside its ISO 8601 text.
 
+    * `Tempo.Ecto.SQLite.TempoRange` — stores any expression whole in a
+      SQLite `TEXT` column, beside the integer bounds it covers, queried
+      by `Tempo.Ecto.SQLite.QueryAPI` and migrated by
+      `Tempo.SQL.SQLite.Migration`.
+
     * `Tempo.SQL.Migration` — `add_interval/2`, `add_interval_set/2`,
       the composite columns and their types, for Ecto migrations.
 

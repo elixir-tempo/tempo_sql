@@ -1,6 +1,6 @@
 import Config
 
-config :ex_tempo_sql, ecto_repos: [Tempo.SQL.Repo]
+config :ex_tempo_sql, ecto_repos: [Tempo.SQL.Repo, Tempo.SQL.SQLiteRepo]
 
 config :ex_tempo_sql, Tempo.SQL.Repo,
   adapter: Ecto.Adapters.Postgres,
@@ -11,6 +11,18 @@ config :ex_tempo_sql, Tempo.SQL.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   types: Tempo.SQL.PostgresTypes,
   priv: "test/support"
+
+# SQLite needs no server: the test database is a file in the system's
+# temporary directory, dropped and created again by `mix test`. SQLite
+# takes one writer at a time, so the pool is one connection, and the test
+# file keeps SQLite's rollback journal: switching a file to WAL as the repo
+# connects races the connection that created it.
+config :ex_tempo_sql, Tempo.SQL.SQLiteRepo,
+  database: Path.join(System.tmp_dir!(), "tempo_sql_test.sqlite3"),
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: 1,
+  journal_mode: :delete,
+  priv: "test/support/sqlite"
 
 config :logger, level: :warning
 

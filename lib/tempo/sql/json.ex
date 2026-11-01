@@ -72,7 +72,61 @@ defmodule Tempo.SQL.JSON do
   """
   @spec decode!(binary()) :: term()
   def decode!(binary) when is_binary(binary) do
-    {decoded, :ok, _rest} = :json.decode(binary, :ok, Meta.decode_options())
-    decoded
+    case decode(binary) do
+      {:ok, decoded} -> decoded
+      {:error, exception} -> raise exception
+    end
+  end
+
+  @doc """
+  Decodes a JSON binary, returning an error for text that is not one
+  JSON document.
+
+  ### Arguments
+
+  * `binary` is the JSON document to decode.
+
+  ### Returns
+
+  * `{:ok, term}`, with JSON `null` becoming `nil`.
+
+  * `{:error, exception}` for text that is not JSON, or that has more
+    than whitespace after its document.
+
+  ### Examples
+
+      iex> Tempo.SQL.JSON.decode(~s({"hours":8}))
+      {:ok, %{"hours" => 8}}
+
+      iex> {:error, _exception} = Tempo.SQL.JSON.decode(~s({"hours":))
+
+      iex> {:error, %ArgumentError{}} = Tempo.SQL.JSON.decode(~s({"hours":8} and more))
+
+  """
+  @spec decode(binary()) :: {:ok, term()} | {:error, Exception.t()}
+  def decode(binary) when is_binary(binary) do
+    binary
+    |> decoded()
+    |> whole()
+  end
+
+  # `:json` raises on text that is not JSON and has no form that returns an
+  # error instead, so this call is where its raise becomes an error.
+  defp decoded(binary) do
+    {:ok, :json.decode(binary, :ok, Meta.decode_options())}
+  rescue
+    error in ErlangError -> {:error, error}
+  end
+
+  defp whole({:ok, {decoded, :ok, ""}}) do
+    {:ok, decoded}
+  end
+
+  defp whole({:ok, {_decoded, :ok, rest}}) do
+    {:error, ArgumentError.exception("JSON document followed by #{inspect(rest)}")}
+  end
+
+  defp whole({:error, _exception} = error) do
+    error
   end
 end

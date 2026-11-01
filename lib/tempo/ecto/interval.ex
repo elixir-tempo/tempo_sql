@@ -43,7 +43,8 @@ if Code.ensure_loaded?(Ecto.Type) do
         (the default) stores a value in a zone or at a time shift as
         the UTC instants it is, in a `tstzrange`; `:floating` stores a
         value with neither, in a `tsrange`. A value of the other frame
-        is refused.
+        is refused by `cast/2`, as a changeset error that names the
+        frame to declare, and by `dump/3`.
 
     ## Storage contract
 
@@ -148,18 +149,18 @@ if Code.ensure_loaded?(Ecto.Type) do
       {:ok, nil}
     end
 
-    def cast(%Tempo{} = expression, _params) do
-      case Conversion.as_interval(expression) do
-        {:ok, interval} -> {:ok, interval}
-        {:error, _} -> :error
-      end
+    def cast(%Tempo{} = expression, params) do
+      expression
+      |> Conversion.as_interval()
+      |> on_frame(params)
+      |> Conversion.cast_result()
     end
 
     def cast(%Postgrex.Range{} = range, params) do
-      case Conversion.range_to_interval(range, resolution: params.resolution) do
-        {:ok, interval} -> {:ok, interval}
-        {:error, _} -> :error
-      end
+      range
+      |> Conversion.range_to_interval(resolution: params.resolution)
+      |> on_frame(params)
+      |> Conversion.cast_result()
     end
 
     def cast(_, _params) do
@@ -200,6 +201,16 @@ if Code.ensure_loaded?(Ecto.Type) do
 
     def dump(_, _, _) do
       :error
+    end
+
+    defp on_frame({:ok, interval}, params) do
+      with :ok <- Conversion.on_frame(interval, Map.get(params, :frame, :utc)) do
+        {:ok, interval}
+      end
+    end
+
+    defp on_frame(error, _params) do
+      error
     end
 
     @impl Ecto.ParameterizedType

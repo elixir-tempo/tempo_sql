@@ -144,11 +144,10 @@ if Code.ensure_loaded?(Ecto.Type) do
       {:ok, nil}
     end
 
-    def cast(%Tempo{} = expression, _params) do
-      case Tempo.to_iso8601(expression) do
-        {:ok, _text} -> {:ok, expression}
-        {:error, _} -> :error
-      end
+    def cast(%Tempo{} = expression, params) do
+      expression
+      |> written_on_frame(Map.get(params, :frame, :utc))
+      |> Conversion.cast_result()
     end
 
     def cast(_, _params) do
@@ -207,6 +206,14 @@ if Code.ensure_loaded?(Ecto.Type) do
       with {:ok, range} <- Conversion.interval_to_queryable_range(expression, frame),
            {:ok, meta} <- Meta.encode_interval(expression),
            do: {:ok, {range, IO.iodata_to_binary(meta)}}
+    end
+
+    # An expression a composite can write, on the column's frame.
+    defp written_on_frame(expression, frame) do
+      with {:ok, _text} <- Tempo.to_iso8601(expression),
+           :ok <- Conversion.on_frame(expression, frame) do
+        {:ok, expression}
+      end
     end
 
     @impl Ecto.ParameterizedType

@@ -59,3 +59,23 @@ defmodule Tempo.SQL.Test.FidelityOpeningHours do
     field(:weekly, Tempo.Ecto.TempoMultirange, frame: :floating)
   end
 end
+
+defmodule Tempo.SQL.Test.SQLiteMeeting do
+  @moduledoc false
+  use Ecto.Schema
+
+  schema "meetings" do
+    field(:name, :string)
+    field(:window, Tempo.Ecto.SQLite.TempoRange)
+  end
+end
+
+defmodule Tempo.SQL.Test.SQLiteShop do
+  @moduledoc false
+  use Ecto.Schema
+
+  schema "shops" do
+    field(:name, :string)
+    field(:hours, Tempo.Ecto.SQLite.TempoRange, frame: :floating)
+  end
+end

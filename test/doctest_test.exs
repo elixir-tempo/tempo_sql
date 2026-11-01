@@ -19,6 +19,9 @@ defmodule Tempo.SQL.DoctestTest do
   doctest Tempo.SQL.Conversion
   doctest Tempo.SQL.JSON
   doctest Tempo.SQL.Meta
+  doctest Tempo.SQL.SQLite.Document
+  doctest Tempo.Ecto.SQLite.TempoRange
+  doctest Tempo.Ecto.SQLite.QueryAPI, only: [probe: 2]
   doctest Tempo.Ecto.Interval
   doctest Tempo.Ecto.IntervalSet
   doctest Tempo.Ecto.Tempo

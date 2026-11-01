@@ -4,4 +4,5 @@ defmodule Tempo.SQL.GuidesTest do
   use ExUnit.Case, async: true
 
   doctest_file("guides/storage-contract.md")
+  doctest_file("guides/sqlite.md")
 end

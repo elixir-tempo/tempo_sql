@@ -7,6 +7,7 @@ defmodule Tempo.Ecto.IntervalTest do
 
   @default_params %{frame: :utc, resolution: :second}
   @floating_params %{frame: :floating, resolution: :second}
+  @floating_params %{frame: :floating, resolution: :second}
 
   defp half_open(lower, upper) do
     %Postgrex.Range{lower: lower, upper: upper, lower_inclusive: true, upper_inclusive: false}
@@ -212,13 +213,32 @@ defmodule Tempo.Ecto.IntervalTest do
 
   describe "cast/2 — the input-accepting surface" do
     test "accepts an interval unchanged" do
-      interval = ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"
+      interval = ~o"2026-06-15T09:00:00Z/2026-06-15T17:00:00Z"
 
       assert {:ok, ^interval} = Interval.cast(interval, @default_params)
     end
 
     test "makes a value the interval it denotes" do
-      assert {:ok, ~o"2026-06-15/2026-06-15"} = Interval.cast(~o"2026-06-15", @default_params)
+      assert {:ok, ~o"2026-06-15/2026-06-15"} = Interval.cast(~o"2026-06-15", @floating_params)
+    end
+
+    test "refuses a value of the other frame, in either direction" do
+      assert {:error, message: message} = Interval.cast(~o"2026-06-15", @default_params)
+      assert message =~ "frame: :floating"
+
+      assert {:error, message: message} =
+               Interval.cast(~o"2026-06-15T09:00Z/2026-06-15T10:00Z", @floating_params)
+
+      assert message =~ "frame: :utc"
+    end
+
+    test "refuses a range read back on the other frame" do
+      range = half_open(~N[2026-06-15 09:00:00], ~N[2026-06-15 17:00:00])
+
+      assert {:error, message: _message} = Interval.cast(range, @default_params)
+
+      assert {:ok, ~o"2026-06-15T09:00:00/2026-06-15T17:00:00"} =
+               Interval.cast(range, @floating_params)
     end
 
     test "accepts a Postgrex.Range" do

@@ -1,7 +1,7 @@
 defmodule Tempo.Sql.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
 
   def project do
     [
@@ -13,7 +13,8 @@ defmodule Tempo.Sql.MixProject do
       #  * `~r/^Tempo\.SQL\.Test\./` — test-support schemas and case
       #    templates. They are test scaffolding, and counting them at
       #    100% flatters the real figure.
-      #  * `Tempo.SQL.Repo` — the Ecto repo, which is configuration.
+      #  * `Tempo.SQL.Repo` and `Tempo.SQL.SQLiteRepo` — the Ecto repos,
+      #    which are configuration.
       #  * `Tempo.SQL.PostgresTypes` — generated in full by
       #    `Postgrex.Types.define/3`; none of its lines are ours.
       test_coverage: [
@@ -21,6 +22,7 @@ defmodule Tempo.Sql.MixProject do
           ~r/Error$/,
           ~r/^Tempo\.SQL\.Test\./,
           Tempo.SQL.Repo,
+          Tempo.SQL.SQLiteRepo,
           Tempo.SQL.PostgresTypes
         ]
       ],
@@ -42,7 +44,7 @@ defmodule Tempo.Sql.MixProject do
 
   def description do
     "Ecto types, query macros and migration helpers that store Tempo " <>
-      "expressions in PostgreSQL ranges and multiranges."
+      "expressions in PostgreSQL ranges and multiranges, and in SQLite."
   end
 
   def package do
@@ -78,6 +80,7 @@ defmodule Tempo.Sql.MixProject do
       extras: [
         "README.md",
         "guides/storage-contract.md",
+        "guides/sqlite.md",
         "CHANGELOG.md",
         "LICENSE.md"
       ],
@@ -92,6 +95,12 @@ defmodule Tempo.Sql.MixProject do
         ],
         Queries: [Tempo.Ecto.QueryAPI, Tempo.Ecto.QueryAPI.Composite],
         Setup: [Tempo.SQL.Migration, Tempo.SQL.PostgresTypes, Tempo.SQL.JSON],
+        SQLite: [
+          Tempo.Ecto.SQLite.TempoRange,
+          Tempo.Ecto.SQLite.QueryAPI,
+          Tempo.SQL.SQLite.Migration,
+          Tempo.SQL.SQLite.Document
+        ],
         Exceptions: [Tempo.SQL.UnsupportedValueError],
         Internals: [Tempo.SQL.Conversion, Tempo.SQL.Meta]
       ]
@@ -110,6 +119,7 @@ defmodule Tempo.Sql.MixProject do
       {:ecto, "~> 3.13"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.19"},
+      {:ecto_sqlite3, "~> 0.26", optional: true},
       {:ex_doc, "~> 0.38", only: [:dev, :test, :release], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
